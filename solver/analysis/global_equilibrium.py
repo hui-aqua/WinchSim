@@ -9,9 +9,12 @@ the whole assembly under gravity and hydrostatic line loads.
 from __future__ import annotations
 
 import math
+import logging
 from pathlib import Path
+from time import perf_counter
 
 from hydrostatics import segment_air_fraction
+from analysis.rigid_equilibrium import force_acceptance_n
 from result_io import write_results
 from result_schema import build_scene, metric_definitions
 from winch_motion import prescribed_motion
@@ -29,6 +32,11 @@ def _point_distance(a, b):
 
 def _xyz_distance(positions, a, b):
     return _point_distance(positions[int(a)], positions[int(b)])
+
+
+def _is_rigid_model(cfg, model):
+    return all(cfg["components"][component_id].get("structural_model", "rigid") == "rigid"
+               for component_id in model["component_nodes"])
 
 
 def _beam_properties(cfg, component_id):
@@ -204,12 +212,16 @@ def _effective_line_load(props, line, endpoint_positions, waterline, gravity, bu
     if buoy:
         air_mass = float(props["line_mass_in_air_kg_per_m"])
         water_mass = float(props["net_line_load_in_water_kgf_per_m"])
-        transition = float(props.get("waterline_transition_diameter_m", props.get("diameter_m", 0.0)))
+        # This component's axis is vertical; the cylinder diameter does not
+        # smear its immersion boundary along the axis.
+        transition = float(props.get("waterline_transition_diameter_m", 0.0))
     else:
         air_mass = float(props["effective_line_mass_in_air_kg_per_m"])
         water_mass = float(props["effective_line_mass_in_water_kg_per_m"])
         transition = float(props.get("waterline_transition_diameter_m", 0.0))
-    air_fraction = segment_air_fraction(a[2], b[2], waterline, transition)
+    air_fraction = segment_air_fraction(
+        a[2], b[2], waterline, transition, circular_section=not buoy and transition > 0.0
+    )
     line_mass = water_mass + (air_mass - water_mass) * air_fraction
     return length, line_mass * gravity, air_fraction
 
@@ -288,7 +300,7 @@ def _solver_once(cfg, model, time_s, load_positions):
     segment_load_lines = []
     waterline = float(cfg["environment"]["waterline_z_m"])
     gravity = float(cfg["environment"]["gravity_m_per_s2"])
-    displacement, _ = prescribed_motion(cfg["winch"], time_s)
+    displacement, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
     upper_joint_ids = {node_id for node_id, role in model["roles"].items() if role == "upper_joint"}
     main_lines = [line for line in model["truss_lines"] if line.get("role") == "main_rope"]
     lift_legs = [line for line in main_lines if upper_joint_ids.intersection(line["nodes"])]
@@ -463,8 +475,10 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
             guess.update({node_id: list(point) for node_id, point in initial_load_positions.items()
                           if node_id in guess})
         if time_s > 0.0:
-            now, _ = prescribed_motion(cfg["winch"], time_s)
-            before, _ = prescribed_motion(cfg["winch"], initial_time_s or 0.0)
+            now, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
+            before, _ = prescribed_motion(
+                cfg["winch"], initial_time_s or 0.0, cfg["solver"]["duration_s"]
+            )
             dz = now - before
             fixed_fixed = {node_id for line in model["truss_lines"]
                            if all(endpoint in model["fixed_nodes"] for endpoint in line["nodes"])
@@ -472,51 +486,47 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
             for node_id in guess:
                 if node_id not in model["fixed_nodes"] and node_id not in fixed_fixed:
                     guess[node_id][2] += dz
-        # Preserve the continuation state. The OpenSees predictor can converge
-        # to a different cable active set (especially around buoy release),
-        # so it must not overwrite the only known nearby equilibrium guess.
-        continuation_guess = {node_id: list(point) for node_id, point in guess.items()}
-        try:
-            guess, _, _ = _solver_once(cfg, model, time_s, guess)
-        except MissingSolverDependencyError:
-            # Do not disguise a wrong Python environment as a failed physical
-            # equilibrium. That can otherwise fall through to the optimizer
-            # with the raw input geometry and produce a misleading residual.
-            raise
-        except RuntimeError as error:
-            # The unilateral energy solver below is the authoritative solve;
-            # OpenSees is only used to find a better initial geometry.
-            import warnings
-            warnings.warn(
-                f"OpenSees predictor failed at t={time_s:.3f} s; trying the rigid "
-                f"energy solver from the current geometry. Predictor error: {error}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        try:
-            return solve_rigid(cfg, model, time_s, guess)
-        except RuntimeError as predictor_start_error:
-            if not initial_load_positions:
-                raise
-            # Restart from the preceding converged state plus prescribed
-            # winch motion. This keeps the same rope reference lengths while
-            # avoiding a bad predictor-selected local minimum.
+        # OpenSees supplies a useful initial geometry, but rebuilding its full
+        # nonlinear model at every output time is redundant. Later states use
+        # the previous converged equilibrium as their continuation start.
+        if initial_load_positions is None:
+            predictor_start = perf_counter()
             try:
-                return solve_rigid(cfg, model, time_s, continuation_guess)
-            except RuntimeError as continuation_error:
-                raise RuntimeError(
-                    f"Global equilibrium failed at t={time_s:.3f} s from both the "
-                    f"OpenSees predictor and the previous equilibrium state. "
-                    f"Predictor start: {predictor_start_error}. "
-                    f"Continuation start: {continuation_error}"
-                ) from continuation_error
+                guess, _, _ = _solver_once(cfg, model, time_s, guess)
+                logging.info("OpenSees initial predictor completed in %.3f s",
+                             perf_counter() - predictor_start)
+            except MissingSolverDependencyError:
+                # Do not disguise a wrong Python environment as a failed physical
+                # equilibrium. That can otherwise fall through to the optimizer
+                # with the raw input geometry and produce a misleading residual.
+                raise
+            except RuntimeError as error:
+                # The unilateral energy solver is authoritative; OpenSees only
+                # provides an initial geometry when it can find one.
+                import warnings
+                logging.warning("OpenSees initial predictor failed after %.3f s: %s",
+                                perf_counter() - predictor_start, error)
+                warnings.warn(
+                    f"OpenSees predictor failed at t={time_s:.3f} s; trying the rigid "
+                    f"energy solver from the current geometry. Predictor error: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        rigid_start = perf_counter()
+        solution = solve_rigid(cfg, model, time_s, guess)
+        logging.info("Rigid equilibrium solve at t=%.3f s completed in %.3f s "
+                     "(iterations=%s, force residual=%.6g N)",
+                     time_s, perf_counter() - rigid_start, solution[3], solution[4])
+        return solution
     load_positions = {**model["xyz"], **model["internal_nodes"]}
     if initial_load_positions:
         load_positions.update({node_id: list(position) for node_id, position in initial_load_positions.items()
                                if node_id in load_positions})
     if initial_time_s is not None:
-        current_shift, _ = prescribed_motion(cfg["winch"], time_s)
-        previous_shift, _ = prescribed_motion(cfg["winch"], initial_time_s)
+        current_shift, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
+        previous_shift, _ = prescribed_motion(
+            cfg["winch"], initial_time_s, cfg["solver"]["duration_s"]
+        )
         dz = current_shift - previous_shift
         fixed_nodes = model["fixed_nodes"]
         fixed_fixed_lines = {int(line["id"]) for line in model["truss_lines"]
@@ -547,14 +557,14 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
         else:
             positions, reaction, tensions = _solver_once(cfg, model, time_s, load_positions)
         if max_iterations == 1:
-            return positions, reaction, tensions, 1, 0.0
+            return positions, reaction, tensions, 1, 0.0, math.inf
         if previous_solution is not None:
             last_residual = max(
                 (_point_distance(positions[node_id], previous_solution[node_id])
                  for node_id in positions), default=0.0
             )
             if last_residual <= tolerance:
-                return positions, reaction, tensions, iteration, last_residual
+                return positions, reaction, tensions, iteration, last_residual, math.inf
         previous_solution = positions
         load_positions = {
             node_id: [load_positions[node_id][k] * (1.0 - relaxation)
@@ -568,8 +578,48 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
     )
 
 
+def _solve_with_continuation_substeps(cfg, model, target_time_s, previous_positions,
+                                      previous_time_s, minimum_step_s):
+    """Retry a failed output step through smaller, unreported continuation steps."""
+    import logging
+
+    try:
+        return solve_equilibrium(cfg, model, target_time_s, previous_positions, previous_time_s)
+    except RuntimeError as direct_error:
+        interval = target_time_s - previous_time_s if previous_time_s is not None else 0.0
+        # A bisection below 2*minimum_step would create child steps smaller
+        # than the configured floor. Stop here and report the true limiting
+        # interval instead of silently attempting sub-minimum solves.
+        if previous_positions is None or interval <= 2.0 * minimum_step_s * (1.0 + 1e-9):
+            raise RuntimeError(
+                f"Equilibrium failed at t={target_time_s:.3f} s with continuation interval "
+                f"{interval:.6g} s (minimum {minimum_step_s:.6g} s): {direct_error}"
+            ) from direct_error
+
+        midpoint = (previous_time_s + target_time_s) / 2.0
+        if midpoint <= previous_time_s or midpoint >= target_time_s:
+            raise direct_error
+        logging.warning(
+            "Equilibrium at t=%.3f s failed; retrying continuation through t=%.6f s "
+            "(interval %.6g s). Cause: %s",
+            target_time_s, midpoint, interval, direct_error,
+        )
+        middle = _solve_with_continuation_substeps(
+            cfg, model, midpoint, previous_positions, previous_time_s, minimum_step_s
+        )
+        rigid_model = _is_rigid_model(cfg, model)
+        logging.info(
+            "Continuation substep converged at t=%.6f s: iterations=%s, %s=%.6g %s, AquaSim Chknorm=%.6g",
+            midpoint, middle[3], "force residual" if rigid_model else "position residual",
+            middle[4], "N" if rigid_model else "m", middle[5],
+        )
+        return _solve_with_continuation_substeps(
+            cfg, model, target_time_s, middle[0], midpoint, minimum_step_s
+        )
+
+
 def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
-                    hydro_iterations, hydro_residual):
+                    hydro_iterations, hydro_residual, aquasim_chknorm):
     waterline = float(cfg["environment"]["waterline_z_m"])
     beam_zs = [positions[node_id][2] for node_id in model["beam_node_ids"]]
     upper_ids = [node_id for node_id, role in model["roles"].items() if role == "upper_joint"]
@@ -586,6 +636,13 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
             air_fraction = segment_air_fraction(a[2], b[2], waterline)
             air_length += length * air_fraction
             water_length += length * (1.0 - air_fraction)
+    rigid_model = _is_rigid_model(cfg, model)
+    if rigid_model:
+        residual_field = "equilibrium_force_residual_n"
+        converged = hydro_residual <= force_acceptance_n(cfg, model)
+    else:
+        residual_field = "equilibrium_position_residual_m"
+        converged = hydro_residual <= float(cfg.get("solver", {}).get("hydrostatic_position_tolerance_m", 0.005))
     row = {
         "time_s": round(float(time_s), 6),
         "beam_z_m": sum(beam_zs) / len(beam_zs) if beam_zs else 0.0,
@@ -599,12 +656,12 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
         "support_reaction_y_n": reaction[1],
         "support_reaction_z_n": reaction[2],
         "support_reaction_magnitude_n": math.sqrt(sum(value * value for value in reaction)),
-        "hydrostatic_iterations": hydro_iterations,
-        "hydrostatic_position_residual_m": hydro_residual,
-        "global_equilibrium_converged": (
-            hydro_residual <= float(cfg.get("solver", {}).get("force_tolerance_n", 0.1))
-        ),
+        "equilibrium_iterations": hydro_iterations,
+        residual_field: hydro_residual,
+        "global_equilibrium_converged": converged,
     }
+    if rigid_model:
+        row["aquasim_chknorm"] = aquasim_chknorm
     for node_id, point in positions.items():
         if node_id in model["nodes"]:
             prefix = f"mesh_node_{node_id}"
@@ -628,12 +685,12 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
     return row
 
 
-def run_model(cfg, input_file, output_json=None, output_csv=None):
+def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=None):
     model = prepare_model(cfg)
     dt = float(cfg["solver"]["time_step_s"])
-    duration = float(cfg["winch"]["duration_s"])
+    duration = float(cfg["solver"]["duration_s"])
     if dt <= 0 or duration < 0:
-        raise ValueError("solver.time_step_s must be positive and winch.duration_s non-negative")
+        raise ValueError("solver.time_step_s must be positive and solver.duration_s non-negative")
 
     times = [i * dt for i in range(int(math.floor(duration / dt)) + 1)]
     if not times or times[0] != 0.0:
@@ -641,62 +698,93 @@ def run_model(cfg, input_file, output_json=None, output_csv=None):
     if times[-1] < duration - 1e-9:
         times.append(duration)
     rows, previous_positions, previous_time = [], None, None
+    minimum_step = float(cfg.get("solver", {}).get("continuation_min_step_s", max(dt / 16.0, 0.01)))
+    if minimum_step <= 0.0:
+        raise ValueError("solver.continuation_min_step_s must be positive")
     initial_equilibrium = None
+    result = None
     for time_s in times:
-        positions, reaction, tensions, iterations, residual = solve_equilibrium(
-            cfg, model, time_s, previous_positions, previous_time
+        logging.info("Solving equilibrium at t=%.3f s", time_s)
+        positions, reaction, tensions, iterations, residual, aquasim_chknorm = _solve_with_continuation_substeps(
+            cfg, model, time_s, previous_positions, previous_time, minimum_step
         )
         previous_positions = positions
         previous_time = time_s
         rows.append(_row_from_state(time_s, cfg, model, positions, reaction, tensions,
-                                    iterations, residual))
+                                    iterations, residual, aquasim_chknorm))
+        rigid_model = _is_rigid_model(cfg, model)
+        logging.info("Equilibrium converged at t=%.3f s: iterations=%s, %s=%.6g %s, AquaSim Chknorm=%.6g",
+                     time_s, iterations, "force residual" if rigid_model else "position residual",
+                     residual, "N" if rigid_model else "m", aquasim_chknorm)
         if initial_equilibrium is None:
+            acceptance = (force_acceptance_n(cfg, model) if rigid_model else float(
+                cfg.get("solver", {}).get("hydrostatic_position_tolerance_m", 0.005)
+            ))
             initial_equilibrium = {
-                "converged": residual <= float(cfg.get("solver", {}).get("force_tolerance_n", 0.1)),
+                "converged": residual <= acceptance,
                 "time_s": 0.0,
-                "hydrostatic_iterations": iterations,
-                "position_residual_m": residual,
+                "equilibrium_iterations": iterations,
+                "force_residual_n" if rigid_model else "position_residual_m": residual,
+                **({"aquasim_chknorm": aquasim_chknorm} if rigid_model else {}),
                 "rope_reference_lengths_m": {
                     str(line_id): length for line_id, length in model["references"].items()
                 },
             }
+        if result is None:
+            try:
+                input_name = Path(input_file).resolve().relative_to(ROOT).as_posix()
+            except ValueError:
+                input_name = Path(input_file).resolve().as_posix()
+            result = {
+                "project": cfg["project"],
+                "model_status": "global_quasi_static_equilibrium",
+                "analysis": {
+                    "method": "global total-potential equilibrium at each prescribed winch position",
+                    "beam_component_models": {
+                        component_id: component.get("structural_model", "rigid")
+                        for component_id, component in cfg["components"].items()
+                        if component.get("element_type") == "beam"
+                    },
+                    "initial_equilibrium": initial_equilibrium,
+                    "rope_reference_lengths_source": "input node endpoint distances captured before equilibrium",
+                },
+                "input_file": input_name,
+                "scene": build_scene(cfg, rows[:1]),
+                "metrics": metric_definitions(rows[:1]),
+                "mesh": {
+                    "nodes": [{"id": node_id, "name": node.get("name"), "role": node.get("role"),
+                               "position_m": model["xyz"][node_id]} for node_id, node in model["nodes"].items()],
+                    "lines": [{"id": line["id"], "name": line.get("name"), "nodes": line["nodes"],
+                               "element_type": line["element_type"], "component_id": line["component_id"],
+                               "role": line.get("role"), "subdivisions": line.get("subdivisions", 1),
+                               "reference_length_m": model["references"].get(line["id"])}
+                              for line in cfg["lines"]],
+                    "components": cfg["components"],
+                },
+                "fields": list(rows[0]),
+            }
+        result["results_count"] = len(rows)
+        result["results_complete"] = False
+        result["results"] = rows
+        out_primary, out_csv = write_results(
+            rows, result, cfg, ROOT, output_json, output_csv, output_bin,
+            default_json=None,
+            default_csv="results/global_equilibrium_results.csv",
+            default_bin="results/global_equilibrium_results.bin",
+            write_json=False,
+        )
+        logging.info("Checkpoint saved at t=%.3f s (%s output states): %s and %s",
+                     time_s, len(rows), out_primary, out_csv)
 
-    scene = build_scene(cfg, rows)
-    result = {
-        "project": cfg["project"],
-        "model_status": "global_quasi_static_equilibrium",
-        "analysis": {
-            "method": "global total-potential equilibrium at each prescribed winch position",
-            "beam_component_models": {
-                component_id: component.get("structural_model", "rigid")
-                for component_id, component in cfg["components"].items()
-                if component.get("element_type") == "beam"
-            },
-            "initial_equilibrium": initial_equilibrium,
-            "rope_reference_lengths_source": "input node endpoint distances captured before equilibrium",
-        },
-        "input_file": str(Path(input_file).resolve()),
-        "scene": scene,
-        "metrics": metric_definitions(rows),
-        "mesh": {
-            "nodes": [{"id": node_id, "name": node.get("name"), "role": node.get("role"),
-                       "position_m": model["xyz"][node_id]} for node_id, node in model["nodes"].items()],
-            "lines": [{"id": line["id"], "name": line.get("name"), "nodes": line["nodes"],
-                       "element_type": line["element_type"], "component_id": line["component_id"],
-                       "role": line.get("role"), "subdivisions": line.get("subdivisions", 1),
-                       "reference_length_m": model["references"].get(line["id"])}
-                      for line in cfg["lines"]],
-            "components": cfg["components"],
-        },
-        "results_count": len(rows), "fields": list(rows[0]), "results": rows,
-    }
-    out_json, out_csv = write_results(
-        rows, result, cfg, ROOT, output_json, output_csv,
-        default_json="results/global_equilibrium_results.json",
+    result["results_complete"] = True
+    out_primary, out_csv = write_results(
+        rows, result, cfg, ROOT, output_json, output_csv, output_bin,
+        default_json=None,
         default_csv="results/global_equilibrium_results.csv",
+        default_bin="results/global_equilibrium_results.bin",
     )
-    print(f"Wrote {len(rows)} equilibrium states to {out_json} and {out_csv}")
+    logging.info("Wrote %s equilibrium states to %s and %s", len(rows), out_primary, out_csv)
     initial_reaction = math.sqrt(sum(rows[0][f"support_reaction_{axis}_n"] ** 2 for axis in "xyz"))
-    print(f"Initial equilibrium reaction: {initial_reaction / 1000:.3f} kN")
-    print(f"Final beam mean height: {rows[-1]['beam_z_m']:.3f} m")
+    logging.info("Initial equilibrium reaction: %.3f kN", initial_reaction / 1000)
+    logging.info("Final beam mean height: %.3f m", rows[-1]["beam_z_m"])
     return result

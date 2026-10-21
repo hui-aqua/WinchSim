@@ -1,0 +1,36 @@
+# Python bytecode and test/type-check caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Local Python environments
+.venv/
+venv/
+env/
+.env/
+.tox/
+
+# Generated run logs and temporary result-write files
+results/*.log
+solver/logs/
+*.tmp
+*.temp
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated package/build output
+build/
+dist/
+*.egg-info/
+.system_generated/

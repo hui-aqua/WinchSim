@@ -7,6 +7,38 @@ bodies. The external potential integrates the configured air/water line mass.
 import math
 
 
+def force_reference_n(cfg, model):
+    """Estimate a stable system-force scale from member self-weight/buoyancy."""
+    gravity = float(cfg["environment"]["gravity_m_per_s2"])
+    total = 0.0
+    for line in model["truss_lines"] + model["beam_lines"]:
+        props = cfg["elements"][cfg["components"][line["component_id"]]["property_set"]]
+        if line.get("role") == "buoy_body":
+            air = float(props["line_mass_in_air_kg_per_m"])
+            water = float(props["net_line_load_in_water_kgf_per_m"])
+        elif line["element_type"] == "beam":
+            air = float(props["effective_line_mass_in_air_kg_per_m"])
+            water = float(props["effective_line_mass_in_water_kg_per_m"])
+        else:
+            air = float(props["line_mass_in_air_kg_per_m"])
+            water = float(props.get("net_line_mass_in_water_kg_per_m", air))
+        length = (model["references"][line["id"]] if line["element_type"] == "truss"
+                  else math.dist(model["xyz"][line["nodes"][0]], model["xyz"][line["nodes"][1]]))
+        total += length * gravity * max(abs(air), abs(water))
+    return max(total, 1.0)
+
+
+def force_acceptance_n(cfg, model):
+    settings = cfg.get("solver", {})
+    absolute = float(settings.get("equilibrium_force_acceptance_n", 25.0))
+    relative = float(settings.get("equilibrium_relative_force_tolerance", 0.005))
+    if absolute < 0.0 or not math.isfinite(absolute):
+        raise ValueError("solver.equilibrium_force_acceptance_n must be finite and non-negative")
+    if relative <= 0.0 or not math.isfinite(relative):
+        raise ValueError("solver.equilibrium_relative_force_tolerance must be positive and finite")
+    return max(absolute, relative * force_reference_n(cfg, model))
+
+
 def solve(cfg, model, time_s, initial_positions=None):
     import numpy as np
     from scipy.optimize import minimize
@@ -51,15 +83,30 @@ def solve(cfg, model, time_s, initial_positions=None):
         x0.extend(start[node_id])
         layout.append(("point", node_id, offset))
     x0 = np.asarray(x0, dtype=float)
+    # Buoyant lower slings naturally settle at the waterline through the
+    # air/water potential. Do not impose a one-sided geometric wall there:
+    # tension can pull a cable segment above the surface.
     bounds = [(None, None)] * len(x0)
-    surface_rope_nodes = {node_id for line in model["truss_lines"]
-                          if line.get("role") == "lower_sling"
-                          for node_id in model["chains"][line["id"]][1:-1]}
-    for item in layout:
-        if item[0] == "point" and item[1] in surface_rope_nodes:
-            bounds[item[2] + 2] = (None, waterline)
 
-    displacement, _ = prescribed_motion(cfg["winch"], time_s)
+    # AquaSim expresses rotational increments as equivalent linear motion so
+    # force-displacement terms are comparable across all generalized DOFs.
+    force_scale = np.ones_like(x0)
+    displacement_scale = np.ones_like(x0)
+    for item in layout:
+        if item[0] == "body" and not item[5]:
+            radius = max(1.0, max(float(np.linalg.norm(q)) for q in item[4]))
+            force_scale[item[6] + 3:item[6] + 6] = 1.0 / radius
+            displacement_scale[item[6] + 3:item[6] + 6] = radius
+
+    last_evaluation = {"x": None, "force": None}
+    previous_iteration = {"x": None, "force": None}
+    chknorm_state = {"value": math.inf, "successive": 0}
+    chknorm_tolerance = float(settings.get("aquasim_convergence_criteria", 1.0))
+    if chknorm_tolerance <= 0.0 or not math.isfinite(chknorm_tolerance):
+        raise ValueError("solver.aquasim_convergence_criteria must be positive and finite")
+    acceptance = force_acceptance_n(cfg, model)
+
+    displacement, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
     upper = {i for i, role in model["roles"].items() if role == "upper_joint"}
     legs = [line for line in model["truss_lines"]
             if line.get("role") == "main_rope" and upper.intersection(line["nodes"])]
@@ -76,15 +123,26 @@ def solve(cfg, model, time_s, initial_positions=None):
         if width <= 0.0:
             mass = air if z >= waterline else water
             return mass, gravity * mass * (z - waterline)
-        bottom, top = waterline - width / 2.0, waterline + width / 2.0
-        if z <= bottom:
-            return water, gravity * water * (z - waterline)
-        if z >= top:
-            primitive = (water + air) * width / 2.0 + air * (z - top)
+        # Circular section immersion: integrate the actual circular-segment
+        # area above the waterline instead of linearly blending mass over the
+        # diameter. Its slope tends smoothly to zero at both edges.
+        radius = width / 2.0
+        h = z - waterline
+        edge_offset = 2.0 / (3.0 * math.pi)
+        if h <= -radius:
+            primitive = water * h - delta * radius * edge_offset
+            return water, gravity * primitive
+        if h >= radius:
+            primitive = (water * radius + delta * radius * (1.0 - edge_offset)
+                         + air * (h - radius))
             return air, gravity * primitive
-        q = z - bottom
-        mass = water + delta * q / width
-        primitive = water * (z - waterline) + delta * q * q / (2.0 * width)
+        u = h / radius
+        root = math.sqrt(max(0.0, 1.0 - u * u))
+        air_fraction = (math.asin(u) + math.pi / 2.0 + u * root) / math.pi
+        primitive_shape = ((u * math.asin(u) + root + math.pi * u / 2.0
+                            - root ** 3 / 3.0) / math.pi) - 2.0 / (3.0 * math.pi)
+        mass = water + delta * air_fraction
+        primitive = water * h + delta * radius * primitive_shape
         return mass, gravity * primitive
 
     def evaluate(x):
@@ -110,7 +168,9 @@ def solve(cfg, model, time_s, initial_positions=None):
             if line.get("role") == "buoy_body":
                 air = float(props["line_mass_in_air_kg_per_m"])
                 water = float(props["net_line_load_in_water_kgf_per_m"])
-                width = float(props.get("waterline_transition_diameter_m", props.get("diameter_m", 0.0)))
+                # A vertical buoy cylinder has a sharp immersion boundary
+                # along its axis. Its diameter does not smear the waterline.
+                width = float(props.get("waterline_transition_diameter_m", 0.0))
             elif line["element_type"] == "beam":
                 air = float(props["effective_line_mass_in_air_kg_per_m"])
                 water = float(props["effective_line_mass_in_water_kg_per_m"])
@@ -118,18 +178,30 @@ def solve(cfg, model, time_s, initial_positions=None):
             else:
                 air = float(props["line_mass_in_air_kg_per_m"])
                 water = float(props.get("net_line_mass_in_water_kg_per_m", air))
-                width = float(props.get("waterline_transition_diameter_m", 0.0))
+                default_diameter = 2.0 * math.sqrt(
+                    float(props.get("cross_section_area_m2", 0.0)) / math.pi
+                )
+                width = float(props.get(
+                    "waterline_transition_diameter_m",
+                    props.get("diameter_m", default_diameter),
+                ))
             a_id, b_id = line["nodes"]
             a, b = p[a_id], p[b_id]
             length0 = (model["references"][line["id"]] if line["element_type"] == "truss"
                        else math.dist(model["xyz"][a_id], model["xyz"][b_id]))
-            for s, w in zip(gx, gw):
-                z = (1.0 - s) * a[2] + s * b[2]
-                mass, potential = mass_potential(z, air, water, width)
-                energy += length0 * w * potential
-                f = length0 * w * gravity * mass
-                grad[a_id][2] += f * (1.0 - s)
-                grad[b_id][2] += f * s
+            breaks = [0.0, 1.0]
+            if width <= 0.0 and (a[2] - waterline) * (b[2] - waterline) < 0.0:
+                breaks.insert(1, (waterline - a[2]) / (b[2] - a[2]))
+            for s0, s1 in zip(breaks, breaks[1:]):
+                for point, weight in zip(gx, gw):
+                    s = s0 + (s1 - s0) * point
+                    w = (s1 - s0) * weight
+                    z = (1.0 - s) * a[2] + s * b[2]
+                    mass, potential = mass_potential(z, air, water, width)
+                    energy += length0 * w * potential
+                    f = length0 * w * gravity * mass
+                    grad[a_id][2] += f * (1.0 - s)
+                    grad[b_id][2] += f * s
 
         # Exact tension-only axial strain energy; slack links have no force.
         for line in model["truss_lines"]:
@@ -175,13 +247,45 @@ def solve(cfg, model, time_s, initial_positions=None):
             else:
                 _, i, offset = item
                 g[offset:offset + 3] = grad[i]
+        last_evaluation["x"] = np.array(x, copy=True)
+        last_evaluation["force"] = np.array(g, copy=True)
         return energy, g
 
+    def aquasim_callback(xk):
+        # L-BFGS-B evaluates the accepted iterate before calling the callback.
+        # Reuse that gradient to calculate the AquaSim increment norm.
+        current_x = np.asarray(xk, dtype=float)
+        if last_evaluation["x"] is None or not np.array_equal(last_evaluation["x"], current_x):
+            evaluate(current_x)
+        current_force = last_evaluation["force"]
+        if previous_iteration["x"] is not None:
+            delta_force = np.abs((current_force - previous_iteration["force"]) * force_scale)
+            delta_displacement = np.abs((current_x - previous_iteration["x"]) * displacement_scale)
+            chknorm_state["value"] = float(np.mean(delta_force ** 1.5 * delta_displacement ** 0.5))
+            if chknorm_state["value"] <= chknorm_tolerance:
+                chknorm_state["successive"] += 1
+            else:
+                chknorm_state["successive"] = 0
+            current_residual = float(np.linalg.norm(current_force * force_scale, ord=np.inf))
+            if (chknorm_state["successive"] >= 2
+                    and current_residual <= acceptance):
+                raise StopIteration
+        previous_iteration["x"] = np.array(current_x, copy=True)
+        previous_iteration["force"] = np.array(current_force, copy=True)
+
+    _, initial_force = evaluate(x0)
+    previous_iteration["x"] = np.array(x0, copy=True)
+    previous_iteration["force"] = np.array(initial_force, copy=True)
     result = minimize(evaluate, x0, jac=True, bounds=bounds,
                       method=str(settings.get("equilibrium_optimizer", "L-BFGS-B")),
+                      callback=aquasim_callback,
                       options={"maxiter": int(settings.get("equilibrium_max_iterations", 2000)),
-                               "ftol": 1e-12, "gtol": float(settings.get("force_tolerance_n", 0.1)),
-                               "maxls": 50, "maxcor": 30})
+                               # A loose relative energy-change test can stop
+                               # L-BFGS-B while the physical force residual is
+                               # still above equilibrium_force_acceptance_n.
+                               "ftol": float(settings.get("equilibrium_ftol", 1e-15)),
+                               "gtol": float(settings.get("force_tolerance_n", 0.1)),
+                               "maxls": 100, "maxcor": 30})
     # At active unilateral bounds, the normal gradient is the contact
     # reaction. It is balanced by the surface constraint and must be removed
     # from the free-force residual. L-BFGS-B's projected gradient uses this
@@ -201,11 +305,13 @@ def solve(cfg, model, time_s, initial_positions=None):
     # L-BFGS-B can report success because the energy change became small even
     # while a force component remains large.  The force residual is the
     # equilibrium criterion; optimizer status alone is not sufficient.
-    acceptance = float(settings.get("equilibrium_force_acceptance_n", 10.0))
+    chknorm_converged = chknorm_state["value"] <= chknorm_tolerance
     if residual > acceptance:
         raise RuntimeError(f"Global equilibrium failed at t={time_s:.3f} s: {result.message}; "
-                           f"generalized force residual {residual:.6g} N "
-                           f"(acceptance {acceptance:.6g} N)")
+                           f"generalized force residual {residual:.6g} N, "
+                           f"AquaSim Chknorm {chknorm_state['value']:.6g} "
+                           f"(criteria {chknorm_tolerance:.6g}), force acceptance "
+                           f"{acceptance:.6g} N (AquaSim norm met: {chknorm_converged})")
 
     positions = {i: np.asarray(v, dtype=float) for i, v in model["xyz"].items()}
     positions.update({i: np.asarray(v, dtype=float) for i, v in model["internal_nodes"].items()})
@@ -238,7 +344,7 @@ def solve(cfg, model, time_s, initial_positions=None):
         if line.get("role") == "buoy_body":
             air = float(props["line_mass_in_air_kg_per_m"])
             water = float(props["net_line_load_in_water_kgf_per_m"])
-            width = float(props.get("waterline_transition_diameter_m", props.get("diameter_m", 0.0)))
+            width = float(props.get("waterline_transition_diameter_m", 0.0))
         elif line["element_type"] == "beam":
             air = float(props["effective_line_mass_in_air_kg_per_m"])
             water = float(props["effective_line_mass_in_water_kg_per_m"])
@@ -252,8 +358,11 @@ def solve(cfg, model, time_s, initial_positions=None):
                    (displacement if line["id"] == moving_line else 0.0)
                    if line["element_type"] == "truss" else
                    math.dist(model["xyz"][line["nodes"][0]], model["xyz"][line["nodes"][1]]))
-        fraction_air = segment_air_fraction(a[2], b[2], waterline, width)
+        fraction_air = segment_air_fraction(
+            a[2], b[2], waterline, width,
+            circular_section=line.get("role") != "buoy_body" and width > 0.0,
+        )
         total_mass += length0 * (water + (air - water) * fraction_air)
     support = [0.0, 0.0, total_mass * gravity]
     # Summed support reaction follows vertical global force balance.
-    return positions, support, tensions, int(result.nit), residual
+    return positions, support, tensions, int(result.nit), residual, chknorm_state["value"]

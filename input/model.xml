@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="2.5" name="3D Winch Lifting Example" description="Quasi-static global equilibrium of a square pipe frame lifted by a main rope and slings." model_type="global_quasi_static_equilibrium" author="hui cheng" lastVersion="2.22.1" units_length="m" units_time="s" units_mass="kg" units_force="N">
+  <environment waterline_z_m="0.0" gravity_m_per_s2="9.81"/>
+  <Nodes>
+    <node id="1" x="-5" y="-5" z="-10"/>
+    <node id="2" x="5" y="-5" z="-10"/>
+    <node id="3" x="5" y="5" z="-10"/>
+    <node id="4" x="-5" y="5" z="-10"/>
+    <node id="5" x="0" y="0" z="-5" name="upper_joint" role="upper_joint"/>
+    <node id="6" x="0" y="0" z="20" name="fixed_winch" role="winch"/>
+  </Nodes>
+  <Components>
+    <beam id="beam1" name="Lifting beam" property_set="beam" structural_model="rigid">
+      <wizard type="circular" outerDiameter="500.0" eModulus="1.1000E+09" gModulus="3.8400E+08"/>
+      <materials young="1.1000E+09" shear="3.8400E+08" crossectionareal="6.490894E-02" iy="1.693131E-03" iz="1.693131E-03" it="3.386262E-03" weightInAir="283.9800" effectiveLineMassInWater="82.7217"/>
+      <description active="true" visible="true">
+        <color red="0.7200" green="0.8700" blue="0.1200"/>
+      </description>
+      <elements>
+        <element id="1" StartNode_ID="1" EndNode_ID="2" name="beam_edge_1"/>
+        <element id="2" StartNode_ID="2" EndNode_ID="3" name="beam_edge_2"/>
+        <element id="3" StartNode_ID="3" EndNode_ID="4" name="beam_edge_3"/>
+        <element id="4" StartNode_ID="4" EndNode_ID="1" name="beam_edge_4"/>
+      </elements>
+    </beam>
+    <truss id="rope1" name="Main rope" property_set="truss">
+      <mooring weightInAir="0.076150" netLineMassInWater="-0.00043125" areal="7.850000E-05" young="6.0000E+10" noCompressionForces="true"/>
+      <description active="true" visible="true">
+        <color red="0.6800" green="0.5600" blue="0.9200"/>
+      </description>
+      <elements>
+        <element id="5" StartNode_ID="6" EndNode_ID="5" name="main_rope" role="main_rope">
+          <winch name="Winch 1" mode="prescribed_speed" velocity="0.1" direction="upward" active="true" node="6"/>
+        </element>
+      </elements>
+    </truss>
+    <truss id="rope2" name="Upper slings" property_set="truss">
+      <mooring weightInAir="0.076150" netLineMassInWater="-0.00043125" areal="7.850000E-05" young="6.0000E+10" noCompressionForces="true"/>
+      <description active="true" visible="true">
+        <color red="0.5500" green="0.6500" blue="0.9500"/>
+      </description>
+      <elements>
+        <element id="6" StartNode_ID="5" EndNode_ID="1" name="upper_sling_1" role="upper_sling"/>
+        <element id="7" StartNode_ID="5" EndNode_ID="2" name="upper_sling_2" role="upper_sling"/>
+        <element id="8" StartNode_ID="5" EndNode_ID="3" name="upper_sling_3" role="upper_sling"/>
+        <element id="9" StartNode_ID="5" EndNode_ID="4" name="upper_sling_4" role="upper_sling"/>
+      </elements>
+    </truss>
+  </Components>
+  <winch mode="prescribed_speed" payout_or_retrieval_speed_m_per_s="0.1" direction="upward"/>
+  <solver duration_s="150.0" analysis_method="global_quasi_static_equilibrium" time_step_s="1.0" default_truss_subdivisions="8" analysis_substeps="30" hydrostatic_iterations="1" hydrostatic_position_tolerance_m="0.005" hydrostatic_relaxation="0.7" force_tolerance_n="0.1" max_newton_iterations="100" dynamic_effects_enabled="false" output_bin="results/results.bin" output_csv="results/results.csv" equilibrium_method="opensees_global_nonlinear_static_equilibrium" truss_compression_regularization_ratio="0.001" slack_tension_threshold_n="1.0" equilibrium_max_iterations="3000" equilibrium_force_acceptance_n="25.0" equilibrium_optimizer="L-BFGS-B"/>
+</model>

@@ -412,8 +412,8 @@ def validate(cfg):
         raise ValueError("elements.truss.cross_section_area_m2 must be positive")
     if float(cfg["solver"]["time_step_s"]) <= 0:
         raise ValueError("solver.time_step_s must be positive")
-    if float(cfg["winch"]["duration_s"]) < 0:
-        raise ValueError("Winch duration must be non-negative")
+    if float(cfg["solver"]["duration_s"]) < 0:
+        raise ValueError("solver.duration_s must be non-negative")
     return model
 
 
@@ -421,7 +421,9 @@ def calculate_row(t, cfg, model=None):
     model = model or derive_mesh(cfg)
     winch, elements = cfg["winch"], cfg["elements"]
     beam, truss, buoy = elements["beam"], elements["truss"], elements["buoy"]
-    displacement, signed_winch_speed = prescribed_motion(winch, t)
+    displacement, signed_winch_speed = prescribed_motion(
+        winch, t, cfg["solver"]["duration_s"]
+    )
     positions = {"roles": model["roles"], "beam_node_ids": set(model["beam_node_ids"]),
                  "xyz": {i: p.copy() for i, p in model["xyz"].items()}}
     for node_id in model["beam_node_ids"]:
@@ -578,15 +580,15 @@ def calculate_row(t, cfg, model=None):
 def _input_name(input_file):
     path = Path(input_file).resolve()
     try:
-        return str(path.relative_to(ROOT))
+        return path.relative_to(ROOT).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
-def run_model(cfg, input_file, output_json=None, output_csv=None):
+def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=None):
     model = validate(cfg)
     dt = float(cfg["solver"]["time_step_s"])
-    duration = float(cfg["winch"]["duration_s"])
+    duration = float(cfg["solver"]["duration_s"])
     rows = [calculate_row(i * dt, cfg, model) for i in range(int(math.floor(duration / dt)) + 1)]
     if rows[-1]["time_s"] < duration - 1e-9:
         rows.append(calculate_row(duration, cfg, model))
@@ -607,12 +609,13 @@ def run_model(cfg, input_file, output_json=None, output_csv=None):
         },
         "results_count": len(rows), "fields": list(rows[0].keys()), "results": rows
     }
-    out_json, out_csv = write_results(
-        rows, result, cfg, ROOT, output_json, output_csv,
-        default_json="results/roller_buoy_results.json",
+    out_primary, out_csv = write_results(
+        rows, result, cfg, ROOT, output_json, output_csv, output_bin,
+        default_json=None,
         default_csv="results/roller_buoy_results.csv",
+        default_bin="results/roller_buoy_results.bin",
     )
-    print(f"Wrote {len(rows)} time points to {out_json} and {out_csv}")
+    print(f"Wrote {len(rows)} time points to {out_primary} and {out_csv}")
     print(f"Beam z at end: {rows[-1]['beam_z_m']:.2f} m")
     return result
 

@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""WinchSim model runner for node/line JSON inputs.
+"""WinchSim model runner for node/line XML or JSON inputs.
 
-Run ``python solver/solve.py [input-file.json]``. The selected analysis method
+Run ``python solver/solve.py [input-file.xml]``. The selected analysis method
 is read from the input file; the supplied models use the global equilibrium
 solver through this single command-line entry point.
 """
 from pathlib import Path
 import argparse
 import json
+import logging
 import math
 from result_schema import build_scene, metric_definitions
 from winch_motion import prescribed_motion
 from result_io import write_results
 from hydrostatics import segment_air_fraction
 from mesh_utils import beam_mesh
+from model_io import load_model
+from run_logging import configure_run_logging
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = ROOT / "input" / "model.json"
+DEFAULT_INPUT = ROOT / "input" / "model.xml"
 
 
 def clamp(value, low, high):
@@ -76,8 +79,8 @@ def validate_mesh(cfg):
         raise ValueError("Mesh needs connected beam elements, one upper_joint, and main_rope lines")
     if float(cfg["solver"]["time_step_s"]) <= 0:
         raise ValueError("solver.time_step_s must be positive")
-    if float(cfg["winch"]["duration_s"]) < 0:
-        raise ValueError("winch.duration_s must be non-negative")
+    if float(cfg["solver"]["duration_s"]) < 0:
+        raise ValueError("solver.duration_s must be non-negative")
     if float(cfg["environment"]["gravity_m_per_s2"]) <= 0:
         raise ValueError("environment.gravity_m_per_s2 must be positive")
     return {"nodes": nodes, "roles": roles, "beam_node_ids": beam_node_ids,
@@ -90,7 +93,7 @@ def validate_mesh(cfg):
 def calculate_row(time_s, cfg, model):
     nodes, roles = model["nodes"], model["roles"]
     positions = {node_id: list(map(float, node["position_m"])) for node_id, node in nodes.items()}
-    displacement, _ = prescribed_motion(cfg["winch"], time_s)
+    displacement, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
     for node_id, role in roles.items():
         if node_id in model["beam_node_ids"] or role == "upper_joint":
             positions[node_id][2] += displacement
@@ -179,7 +182,7 @@ def calculate_row(time_s, cfg, model):
     return row
 
 
-def run_mesh_model(cfg, input_file, output_json=None, output_csv=None):
+def run_mesh_model(cfg, input_file, output_json=None, output_csv=None, output_bin=None):
     solver_cfg = cfg.get("solver", {})
     if solver_cfg.get("dynamic_effects_enabled", False):
         raise NotImplementedError(
@@ -189,10 +192,10 @@ def run_mesh_model(cfg, input_file, output_json=None, output_csv=None):
     analysis_method = solver_cfg.get("analysis_method", "quasi_static_mesh_preview")
     if analysis_method == "global_quasi_static_equilibrium":
         from analysis.global_equilibrium import run_model
-        return run_model(cfg, input_file, output_json, output_csv)
+        return run_model(cfg, input_file, output_json, output_csv, output_bin)
     if analysis_method == "quasi_static_lower_sling_profiles":
         from analysis.roller_buoy import run_model
-        return run_model(cfg, input_file, output_json, output_csv)
+        return run_model(cfg, input_file, output_json, output_csv, output_bin)
     if analysis_method != "quasi_static_mesh_preview":
         raise ValueError(
             f"Unsupported solver.analysis_method {analysis_method!r}. "
@@ -201,14 +204,14 @@ def run_mesh_model(cfg, input_file, output_json=None, output_csv=None):
         )
     model = validate_mesh(cfg)
     dt = float(cfg["solver"]["time_step_s"])
-    duration = float(cfg["winch"]["duration_s"])
+    duration = float(cfg["solver"]["duration_s"])
     rows = [calculate_row(i * dt, cfg, model) for i in range(int(math.floor(duration / dt)) + 1)]
     if not rows or rows[-1]["time_s"] < duration - 1e-9:
         rows.append(calculate_row(duration, cfg, model))
     try:
-        input_name = str(Path(input_file).resolve().relative_to(ROOT))
+        input_name = Path(input_file).resolve().relative_to(ROOT).as_posix()
     except ValueError:
-        input_name = str(Path(input_file).resolve())
+        input_name = Path(input_file).resolve().as_posix()
     result = {
         "project": cfg["project"], "model_status": "quasi_static_mesh_preview",
         "input_file": input_name, "scene": build_scene(cfg, rows),
@@ -220,22 +223,31 @@ def run_mesh_model(cfg, input_file, output_json=None, output_csv=None):
         },
         "results_count": len(rows), "fields": list(rows[0]), "results": rows
     }
-    out_json, out_csv = write_results(rows, result, cfg, ROOT, output_json, output_csv)
-    print(f"Wrote {len(rows)} time points to {out_json} and {out_csv}")
+    out_file, out_csv = write_results(rows, result, cfg, ROOT, output_json, output_csv, output_bin)
+    print(f"Wrote {len(rows)} time points to {out_file} and {out_csv}")
     print(f"Initial quasi-static support reaction: {rows[0]['support_reaction_z_quasistatic_n'] / 1000:.3f} kN")
     print(f"Final quasi-static support reaction: {rows[-1]['support_reaction_z_quasistatic_n'] / 1000:.3f} kN")
     return result
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run a WinchSim node/line input model")
-    parser.add_argument("input", nargs="?", default=str(DEFAULT_INPUT), help="Model JSON input file")
-    parser.add_argument("--output-json", help="Override the JSON result path")
-    parser.add_argument("--output-csv", help="Override the CSV result path")
+    parser = argparse.ArgumentParser(description="Run a WinchSim node/line input model (XML or JSON)")
+    parser.add_argument("input", nargs="?", default=str(DEFAULT_INPUT), help="Model XML input file (e.g. input/model.xml)")
+    parser.add_argument("--output-bin", help="Override the binary result path (.bin)")
+    parser.add_argument("--output-csv", help="Override the CSV result path (.csv)")
+    parser.add_argument("--output-json", help="Optional override for legacy JSON result path (.json)")
     args = parser.parse_args(argv)
-    input_file = Path(args.input).resolve()
-    cfg = json.loads(input_file.read_text(encoding="utf-8-sig"))
-    run_mesh_model(cfg, input_file, args.output_json, args.output_csv)
+    log_path = configure_run_logging(args.input, ROOT / "results")
+    try:
+        cfg, input_file = load_model(args.input)
+        logging.info("Analysis method: %s", cfg.get("solver", {}).get("analysis_method", "quasi_static_mesh_preview"))
+        logging.info("Time step: %s s; duration: %s s", cfg["solver"].get("time_step_s"), cfg["solver"].get("duration_s"))
+        run_mesh_model(cfg, input_file, args.output_json, args.output_csv, args.output_bin)
+    except Exception:
+        logging.exception("Solver run failed")
+        raise
+    logging.info("Solver run completed successfully")
+    logging.info("Timestamped run log: %s", log_path.resolve())
 
 
 if __name__ == "__main__":
