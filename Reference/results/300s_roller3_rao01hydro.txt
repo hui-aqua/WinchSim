@@ -1,0 +1,94 @@
+ 
+ Values in global coordinate system
+ STEP           6
+ Inner water mass [Tonne]
+                      X,                   Y,                   Z,
+  
+ Added mass [Tonne]
+                      X,                   Y,                   Z,
+  
+ Hydrodynamic damping [Nm/s]
+                      X,                   Y,                   Z,
+ 
+ Damping flexible tarp [nm/s]
+                      X,                   Y,                   Z,
+  
+  
+ Total areas of all element with features stated
+  
+ Surface area
+                       Total area [m2]      Wetted area [m2]
+  
+ Projected areas [m2]
+ (Sum of dot products areas with normal vectors)
+                      X,                   Y,                   Z,
+  
+ 
+ Projected areas absolute [m2]
+ (Sum of dot products areas with the absolute of normal vectors)
+                      X,                   Y,                   Z,
+  
+ 
+ Hydrodynamic wave force RAO [N] (per m wave amplitude)
+ (Froude Kriloff + diffraction)
+  
+ 
+ Hydrodynamic wave force RAO phase [DEG]
+ (Froude Kriloff + diffraction)
+  
+ 
+ Froude Kriloff wave force RAO [N]  (per m wave amplitude)
+ (Froude Kriloff only)
+  
+ 
+ Froude Kriloff wave force RAO phase [DEG]
+ (Froude Kriloff only)
+  
+ 
+ Diffraction wave force RAO [N]  (per m wave amplitude)
+ (Diffraction only)
+  
+ 
+ Diffraction wave force RAO phase [DEG]
+ (Diffraction only)
+  
+ Inertia from vertical added mass about axis from origin [TonneMeter] (Note! Not
+  scaled with factors)
+                       Y,                   X,          
+  
+ Inertia from vertical added mass about axis from centre [TonneMeter]  (Note! No
+ t scaled with factors)
+                       Y (pitch),           X (roll),    
+  
+ Inertia from horizontal added mass about z-axis at origin [TonneMeter]  (Note! 
+ Not scaled with factors)
+                       X,                   Y,          
+  
+ Inertia from horizontal added mass about z-axis from centre [TonneMeter]  (Note
+ ! Not scaled with factors)
+                   X(contribution to YAW),Y (contribution to YAW) 
+  
+ Inertia from vertical hydodynamic damping about axis  from origin [Nm3/s]
+                       X,                   Y,          
+  
+ Inertia from vertical hydodynamic damping about axis from centre [Nm3/s]
+                       X (pitch),           Y (roll),    
+  
+ Inertia from horizontal damping about z-axis at origin [Nm3/s]
+                       X,                   Y,          
+  
+ Inertia from horizontal damping about z-axis from centre [Nm3/s]
+                   X(contribution to YAW),Y (contribution to YAW) 
+  
+  
+  
+ Hydrodynamic forces [N]
+ 
+ Component,      Step,            X,                   Y,                   Z,
+ 
+  
+  
+ Drift forces [N]
+ 
+ Component,      Step,            X,                   Y,       
+ 

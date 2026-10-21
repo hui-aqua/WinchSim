@@ -1,0 +1,138 @@
+ Expirydate          21           1        2027
+ AquaSim solver version 2.22.1 2026-06-30
+ Expirydate          21           1        2027
+ Weight in total for each element group
+  In water weight, In air weight, In water buoyancy, Total length (twines if net
+ )
+         Number ,    N    ,      N        ,    N         ,   m 
+Component      1   0.3246E+05   0.1114E+06   0.7897E+05    0.4000E+02
+Component      2  -0.1966E+02   0.3471E+03   0.3668E+03    0.4646E+03
+            
+ Mass centre beams, trusses and membranes/shells 
+     x         , y          , z 
+  3.6135159E-02 -5.3568375E-03  -9.949140    
+            
+ Mass centre beams and trusses 
+     x         , y          , z 
+  3.6135159E-02 -5.3568375E-03  -9.949140    
+            
+ Mass centre beams only      
+    x         , y          , z 
+  0.0000000E+00  0.0000000E+00  -10.00000    
+            
+ Radius of gyration excluding local radius beams
+    x         , y          , z 
+   3.666013       3.733057       5.044677    
+ Radius of gyration including local radius beams
+    x         , y          , z 
+   4.214773       4.300677       5.831003    
+            
+ Radius of gyration beams inluding loc radius  
+    x         , y          , z 
+   4.082483       4.082483       5.773503    
+            
+            
+  Centre of buoyancy (Excluding effect of volume inside impermable nets and     
+ distance to weight centre for hydrodynamic components)
+     x         , y          , z 
+  5.3792957E-02 -7.9745091E-03  -9.924286    
+            
+            
+  Centre of buoyancy submerged elements [m] (Same exclusions)
+    x         , y          , z 
+  2.7598329E-20  8.2794983E-20  -9.998878    
+  
+ Beam elements only:
+  Centre of buoyancy [m] (Excluding effect of volume inside impermable nets and 
+ distance to weight centre for hydrodynamic components)
+    x         , y          , z 
+  0.0000000E+00  0.0000000E+00  -10.00000    
+ Beam elements only:     
+  Centre of buoyancy submerged elements [m] (Same exclusions)
+    x         , y          , z 
+  0.0000000E+00  0.0000000E+00  -10.00000    
+            
+ Total, all elements  
+Weight in air  [N]                                      111781.04135
+Weight in water [N]                                      32440.34606
+ The automatic in and out of water option is used
+ Weight in air is used for part over water line
+ Weight in water is used for part under water line
+Buoyancy [N]                                             79340.69530
+Diffac = Weight/buoyancy of all elements                    1.40887
+Total mass [kg]                                          11394.59307
+buoyancy non Hydrodyn beams and trusses [kg]              8087.73618
+Weight elements [N] / Mass elements [kg]                     9.81001
+Total mass of beam elements [kg]                         11359.21065
+  
+ Properties to nodeloads
+Upwards force of node loads [N]                              0.00000
+Downwards force of node loads [N]                            0.00000
+Mass to nodeloads[kg]                                        0.00000
+ (Exclusive of mass-springs)
+  
+ Volume to water line modeled           0
+ 
+ Output at step 1
+ 
+ Key data after static equilibrium in analysis  (only morison elements)
+ Weight in total for each element group
+  Weight below water line, Weight above water line, Boyancy, Total length (twine
+ s if net)
+         Number ,    kg    ,      kg       ,    kg         ,   m 
+Component      1   0.1136E+05   0.0000E+00   0.8050E+04    0.4000E+02
+Component      2   0.3045E+01   0.3234E+02   0.3217E+01    0.4646E+03
+ 
+  Total beams and trusses
+  Other component types no accounted for
+  Weight below water line, Weight above water line, Boyancy, parts in water, Dif
+ ferenc weight - buoyancy
+         Number ,    kg    ,      kg       ,    kg         ,   kg 
+Component      3   0.1136E+05   0.3234E+02   0.8054E+04    0.3341E+04
+            
+ Mass centre beams and trusses 
+     x         , y          , z 
+  3.6108430E-02 -5.3562340E-03  -10.37306    
+            
+ Mass centre beams only      
+    x         , y          , z 
+  3.2026686E-16  1.9013727E-16  -10.42461    
+            
+            
+ 
+ Output at step           5
+ 
+ Key data after static equilibrium in analysis  (only morison elements)
+ Weight in total for each element group
+  Weight below water line, Weight above water line, Boyancy, Total length (twine
+ s if net)
+         Number ,    kg    ,      kg       ,    kg         ,   m 
+Component      1   0.1136E+05   0.0000E+00   0.8050E+04    0.4000E+02
+Component      2   0.3045E+01   0.3234E+02   0.3217E+01    0.4646E+03
+ 
+  Total beams and trusses
+  Other component types no accounted for
+  Weight below water line, Weight above water line, Boyancy, parts in water, Dif
+ ferenc weight - buoyancy
+         Number ,    kg    ,      kg       ,    kg         ,   kg 
+Component      3   0.1136E+05   0.3234E+02   0.8054E+04    0.3341E+04
+            
+ Mass centre beams and trusses 
+     x         , y          , z 
+  3.6108430E-02 -5.3562340E-03  -10.37306    
+            
+ Mass centre beams only      
+    x         , y          , z 
+  4.8040029E-16  9.9080440E-16  -10.42461    
+            
+            
+ 
+ 
+ Maximum values for spring forces (inc buoys)
+ Data is presentet av follows:
+ Spring [no], Node[no], Springforce(1-6)[N]
+ 
+ Minimum values for spring forces (inc buoys)
+ Data is presentet av follows:
+ Spring [no], Node[no], Springforce(1-6)[N]
+ 
