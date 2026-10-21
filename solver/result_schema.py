@@ -23,11 +23,17 @@ def _build_mesh_scene(cfg, rows):
     }
     scene_nodes = []
     node_z_fields = {}
+    node_position_fields = {}
     for node_id, node in source_nodes.items():
         role = inferred_roles.get(node_id, node.get("role", "structural"))
         position = list(map(float, node["position_m"]))
         scene_role = "beam" if node_id in beam_node_ids and role == "structural" else role_map.get(role, role)
-        if node_id in beam_node_ids:
+        xyz_fields = {axis: f"mesh_node_{node_id}_{axis}_m" for axis in ("x", "y", "z")}
+        if all(field in first for field in xyz_fields.values()):
+            for axis_index, axis in enumerate(("x", "y", "z")):
+                position[axis_index] = float(first[xyz_fields[axis]])
+            node_position_fields[scene_ids[node_id]] = xyz_fields
+        elif node_id in beam_node_ids:
             field = f"mesh_node_{node_id}_z_m"
             position[2] = float(first.get(field, first["beam_z_m"]))
             node_z_fields.setdefault(field, []).append(scene_ids[node_id])
@@ -44,7 +50,6 @@ def _build_mesh_scene(cfg, rows):
                             "role": scene_role, "label": node.get("name", str(node_id))})
 
     elements, primitives = [], []
-    node_position_fields = {}
     for line in cfg["lines"]:
         line_id = int(line["id"])
         role = line.get("role", "")
@@ -57,19 +62,27 @@ def _build_mesh_scene(cfg, rows):
             top = source_nodes[int(line["nodes"][1])]
             if inferred_roles.get(int(line["nodes"][0])) == "buoy_top":
                 bottom, top = top, bottom
+            bottom_id, top_id = int(bottom["id"]), int(top["id"])
             bottom_xyz, top_xyz = bottom["position_m"], top["position_m"]
             buoy = cfg["elements"].get("buoy", {})
-            primitives.append({
+            center = _vec(bottom_xyz[0], bottom_xyz[1], first["buoy_bottom_z_m"])
+            bottom_fields = {axis: f"mesh_node_{bottom_id}_{axis}_m" for axis in ("x", "y", "z")}
+            if all(field in first for field in bottom_fields.values()):
+                center = [float(first[bottom_fields[axis]]) for axis in ("x", "y", "z")]
+            primitive = {
                 "id": component_id, "component_id": component_id, "type": "cylinder",
-                "center": _vec(bottom_xyz[0], bottom_xyz[1], first["buoy_bottom_z_m"]),
+                "center": center,
                 "radius": float(buoy["diameter_m"]) / 2,
                 "height": abs(float(top_xyz[2]) - float(bottom_xyz[2])),
                 "role": "buoy", "category": "buoys",
-            })
+            }
+            primitives.append(primitive)
+            if all(field in first for field in bottom_fields.values()):
+                node_position_fields[f"primitive:{component_id}"] = bottom_fields
             continue
 
         visual_role = "beam" if line["element_type"] == "beam" else "rope"
-        if role == "lower_sling":
+        if line["element_type"] == "truss":
             subdivisions = int(line.get("subdivisions", 1))
             if subdivisions < 1:
                 raise ValueError(f"line {line_id} subdivisions must be at least 1")
@@ -77,12 +90,15 @@ def _build_mesh_scene(cfg, rows):
             for j in range(1, subdivisions):
                 node_id = f"line-{line_id}-p{j}"
                 internal_ids.append(node_id)
-                fields = {axis: f"lower_sling_{line_id}_profile_{j}_{axis}_m" for axis in ("x", "y", "z")}
+                fields = {axis: f"truss_line_{line_id}_p{j}_{axis}_m" for axis in ("x", "y", "z")}
                 a, b = (source_nodes[int(v)]["position_m"] for v in line["nodes"])
                 u = j / subdivisions
                 position = [float(a[k]) * (1 - u) + float(b[k]) * u for k in range(3)]
                 for axis_index, axis in enumerate(("x", "y", "z")):
                     value = first.get(fields[axis])
+                    if value is None and role == "lower_sling":
+                        fields[axis] = f"lower_sling_{line_id}_profile_{j}_{axis}_m"
+                        value = first.get(fields[axis])
                     if value is not None:
                         position[axis_index] = float(value)
                 scene_nodes.append({"id": node_id, "position": position, "role": "rope"})
@@ -92,6 +108,7 @@ def _build_mesh_scene(cfg, rows):
                 ordered_endpoints = endpoints
             else:
                 ordered_endpoints = list(reversed(endpoints))
+                internal_ids.reverse()
             elements.append({"id": f"line-{line_id}", "name": line.get("name"),
                              "type": "polyline", "nodes": [ordered_endpoints[0], *internal_ids, ordered_endpoints[1]],
                              "role": visual_role, "category": category, "component_id": component_id})
@@ -126,7 +143,11 @@ def _build_mesh_scene(cfg, rows):
         "nodes": scene_nodes, "elements": elements, "primitives": primitives,
         "components": components,
         "animation": {"node_z_fields": node_z_fields,
-                      "node_position_fields": node_position_fields,
+                      "node_position_fields": {key: value for key, value in node_position_fields.items()
+                                               if not key.startswith("primitive:")},
+                      "primitive_position_fields": {
+                          key.split(":", 1)[1]: value for key, value in node_position_fields.items()
+                          if key.startswith("primitive:")},
                       "primitive_z_fields": {"buoy_bottom_z_m": [p["id"] for p in primitives]}},
     }
 

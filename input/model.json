@@ -1,40 +1,193 @@
 {
   "project": {
     "name": "3D Winch Lifting Example",
-    "description": "Prescribed-speed lifting of a square pipe frame using a main rope and four slings.",
-    "model_type": "quasi_static_mesh_preview",
-    "units": {"length": "m", "time": "s", "mass": "kg", "force": "N"}
+    "description": "Quasi-static global equilibrium of a square pipe frame lifted by a main rope and slings.",
+    "model_type": "global_quasi_static_equilibrium",
+    "units": {
+      "length": "m",
+      "time": "s",
+      "mass": "kg",
+      "force": "N"
+    }
   },
-  "environment": {"waterline_z_m": 0.0, "gravity_m_per_s2": 9.81},
+  "environment": {
+    "waterline_z_m": 0.0,
+    "gravity_m_per_s2": 9.81
+  },
   "nodes": [
-    {"id": 1, "position_m": [-5.0, -5.0, -10.0]},
-    {"id": 2, "position_m": [5.0, -5.0, -10.0]},
-    {"id": 3, "position_m": [5.0, 5.0, -10.0]},
-    {"id": 4, "position_m": [-5.0, 5.0, -10.0]},
-    {"id": 5, "name": "upper_joint", "role": "upper_joint", "position_m": [0.0, 0.0, -5.0]},
-    {"id": 6, "name": "fixed_winch", "role": "winch", "position_m": [0.0, 0.0, 20.0]}
+    {
+      "id": 1,
+      "position_m": [
+        -5.0,
+        -5.0,
+        -10.0
+      ]
+    },
+    {
+      "id": 2,
+      "position_m": [
+        5.0,
+        -5.0,
+        -10.0
+      ]
+    },
+    {
+      "id": 3,
+      "position_m": [
+        5.0,
+        5.0,
+        -10.0
+      ]
+    },
+    {
+      "id": 4,
+      "position_m": [
+        -5.0,
+        5.0,
+        -10.0
+      ]
+    },
+    {
+      "id": 5,
+      "name": "upper_joint",
+      "role": "upper_joint",
+      "position_m": [
+        0.0,
+        0.0,
+        -5.0
+      ]
+    },
+    {
+      "id": 6,
+      "name": "fixed_winch",
+      "role": "winch",
+      "position_m": [
+        0.0,
+        0.0,
+        20.0
+      ]
+    }
   ],
   "lines": [
-    {"id": 1, "name": "beam_edge_1", "nodes": [1, 2], "element_type": "beam", "component_id": "beam1"},
-    {"id": 2, "name": "beam_edge_2", "nodes": [2, 3], "element_type": "beam", "component_id": "beam1"},
-    {"id": 3, "name": "beam_edge_3", "nodes": [3, 4], "element_type": "beam", "component_id": "beam1"},
-    {"id": 4, "name": "beam_edge_4", "nodes": [4, 1], "element_type": "beam", "component_id": "beam1"},
-    {"id": 5, "name": "main_rope", "nodes": [6, 5], "element_type": "truss", "component_id": "rope1", "role": "main_rope"},
-    {"id": 6, "name": "upper_sling_1", "nodes": [5, 1], "element_type": "truss", "component_id": "rope2", "role": "upper_sling"},
-    {"id": 7, "name": "upper_sling_2", "nodes": [5, 2], "element_type": "truss", "component_id": "rope2", "role": "upper_sling"},
-    {"id": 8, "name": "upper_sling_3", "nodes": [5, 3], "element_type": "truss", "component_id": "rope2", "role": "upper_sling"},
-    {"id": 9, "name": "upper_sling_4", "nodes": [5, 4], "element_type": "truss", "component_id": "rope2", "role": "upper_sling"}
+    {
+      "id": 1,
+      "name": "beam_edge_1",
+      "nodes": [
+        1,
+        2
+      ],
+      "element_type": "beam",
+      "component_id": "beam1"
+    },
+    {
+      "id": 2,
+      "name": "beam_edge_2",
+      "nodes": [
+        2,
+        3
+      ],
+      "element_type": "beam",
+      "component_id": "beam1"
+    },
+    {
+      "id": 3,
+      "name": "beam_edge_3",
+      "nodes": [
+        3,
+        4
+      ],
+      "element_type": "beam",
+      "component_id": "beam1"
+    },
+    {
+      "id": 4,
+      "name": "beam_edge_4",
+      "nodes": [
+        4,
+        1
+      ],
+      "element_type": "beam",
+      "component_id": "beam1"
+    },
+    {
+      "id": 5,
+      "name": "main_rope",
+      "nodes": [
+        6,
+        5
+      ],
+      "element_type": "truss",
+      "component_id": "rope1",
+      "role": "main_rope"
+    },
+    {
+      "id": 6,
+      "name": "upper_sling_1",
+      "nodes": [
+        5,
+        1
+      ],
+      "element_type": "truss",
+      "component_id": "rope2",
+      "role": "upper_sling"
+    },
+    {
+      "id": 7,
+      "name": "upper_sling_2",
+      "nodes": [
+        5,
+        2
+      ],
+      "element_type": "truss",
+      "component_id": "rope2",
+      "role": "upper_sling"
+    },
+    {
+      "id": 8,
+      "name": "upper_sling_3",
+      "nodes": [
+        5,
+        3
+      ],
+      "element_type": "truss",
+      "component_id": "rope2",
+      "role": "upper_sling"
+    },
+    {
+      "id": 9,
+      "name": "upper_sling_4",
+      "nodes": [
+        5,
+        4
+      ],
+      "element_type": "truss",
+      "component_id": "rope2",
+      "role": "upper_sling"
+    }
   ],
   "components": {
-    "beam1": {"name": "Lifting beam", "element_type": "beam", "property_set": "beam"},
-    "rope1": {"name": "Main rope", "element_type": "truss", "property_set": "truss"},
-    "rope2": {"name": "Upper slings", "element_type": "truss", "property_set": "truss"}
+    "beam1": {
+      "name": "Lifting beam",
+      "element_type": "beam",
+      "property_set": "beam",
+      "structural_model": "rigid"
+    },
+    "rope1": {
+      "name": "Main rope",
+      "element_type": "truss",
+      "property_set": "truss"
+    },
+    "rope2": {
+      "name": "Upper slings",
+      "element_type": "truss",
+      "property_set": "truss"
+    }
   },
   "elements": {
     "truss": {
       "element_type": "truss",
       "youngs_modulus_pa": 60000000000.0,
-      "cross_section_area_m2": 7.85e-5,
+      "cross_section_area_m2": 7.85e-05,
       "line_mass_in_air_kg_per_m": 0.07615,
       "net_line_mass_in_water_kg_per_m": -0.00043125,
       "interpretation_note": "Negative underwater line mass represents net buoyancy."
@@ -43,15 +196,39 @@
       "element_type": "beam",
       "effective_line_mass_in_water_kg_per_m": 82.721721,
       "effective_line_mass_in_air_kg_per_m": 283.98,
-      "waterline_transition_diameter_m": 0.5
+      "waterline_transition_diameter_m": 0.5,
+      "youngs_modulus_pa": 1100000000.0,
+      "shear_modulus_pa": 384000000.0,
+      "cross_section_area_m2": 0.06490893912375607,
+      "second_moment_area_y_m4": 0.0016931309017302076,
+      "second_moment_area_z_m4": 0.0016931309017302076,
+      "torsional_constant_m4": 0.003386261803460415
     }
   },
-  "winch": {"mode": "prescribed_speed", "payout_or_retrieval_speed_m_per_s": 0.1, "direction": "upward", "duration_s": 150.0},
+  "winch": {
+    "mode": "prescribed_speed",
+    "payout_or_retrieval_speed_m_per_s": 0.1,
+    "direction": "upward",
+    "duration_s": 150.0
+  },
   "solver": {
-    "analysis_method": "quasi_static_mesh_preview",
+    "analysis_method": "global_quasi_static_equilibrium",
     "time_step_s": 1.0,
+    "default_truss_subdivisions": 8,
+    "analysis_substeps": 30,
+    "hydrostatic_iterations": 1,
+    "hydrostatic_position_tolerance_m": 0.005,
+    "hydrostatic_relaxation": 0.7,
+    "force_tolerance_n": 0.1,
+    "max_newton_iterations": 100,
     "dynamic_effects_enabled": false,
     "output_json": "results/results.json",
-    "output_csv": "results/results.csv"
+    "output_csv": "results/results.csv",
+    "equilibrium_method": "opensees_global_nonlinear_static_equilibrium",
+    "truss_compression_regularization_ratio": 0.001,
+    "slack_tension_threshold_n": 1.0,
+    "equilibrium_max_iterations": 3000,
+    "equilibrium_force_acceptance_n": 25.0,
+    "equilibrium_optimizer": "L-BFGS-B"
   }
 }

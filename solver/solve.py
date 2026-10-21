@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """WinchSim model runner for node/line JSON inputs.
 
-Run ``python solver/solve.py [input-file.json]``. Ordinary mesh preview models
-use the kinematic load estimator; models selecting lower-sling profile
-analysis use the specialized discrete-truss path solver through this same
-entry point.
+Run ``python solver/solve.py [input-file.json]``. The selected analysis method
+is read from the input file; the supplied models use the global equilibrium
+solver through this single command-line entry point.
 """
 from pathlib import Path
 import argparse
@@ -188,13 +187,17 @@ def run_mesh_model(cfg, input_file, output_json=None, output_csv=None):
             "or select a supported quasi-static analysis method."
         )
     analysis_method = solver_cfg.get("analysis_method", "quasi_static_mesh_preview")
+    if analysis_method == "global_quasi_static_equilibrium":
+        from analysis.global_equilibrium import run_model
+        return run_model(cfg, input_file, output_json, output_csv)
     if analysis_method == "quasi_static_lower_sling_profiles":
         from analysis.roller_buoy import run_model
         return run_model(cfg, input_file, output_json, output_csv)
     if analysis_method != "quasi_static_mesh_preview":
         raise ValueError(
             f"Unsupported solver.analysis_method {analysis_method!r}. "
-            "Available methods: quasi_static_mesh_preview, quasi_static_lower_sling_profiles"
+            "Available methods: global_quasi_static_equilibrium, quasi_static_mesh_preview, "
+            "quasi_static_lower_sling_profiles"
         )
     model = validate_mesh(cfg)
     dt = float(cfg["solver"]["time_step_s"])
