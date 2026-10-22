@@ -21,7 +21,7 @@ Run one of the supplied models:
 
 The solver prints progress and writes a timestamped log under `results/`. Results are checkpointed as the run proceeds, so a failed run retains the states completed before failure.
 
-To view a result, run `Open-WinchSim.bat`, select **Browse**, and open the corresponding `.bin` file in `results/`. The viewer can also open an `.xml` or `.amodel` model for a static geometry preview.
+To view a result, open the [hosted viewer](https://hui-aqua.github.io/WinchSim/), select **Browse**, and open the corresponding `.bin` file from your generated `results/` folder. The viewer can also open an `.xml` or `.amodel` model for a static geometry preview.
 
 The browser viewer is also available at [hui-aqua.github.io/WinchSim](https://hui-aqua.github.io/WinchSim/) after GitHub Pages deployment. It runs in the browser; choose **Browse** to load a local `.bin`, `.json`, `.xml`, or `.amodel` file. Files are not uploaded.
 

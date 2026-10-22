@@ -71,12 +71,7 @@ Every run creates a timestamped log in `results/`, for example `model_roller_buo
 
 The solver checkpoints `.bin` and `.csv` outputs after each requested output state. If a later state fails, the last saved files contain the preceding states and the binary metadata marks the result incomplete. A complete result has `results_complete: true` and ends at the configured duration.
 
-To open playback:
-
-1. Run `Open-WinchSim.bat` and leave its console window open while using the viewer.
-2. In the browser tab, choose **Browse**.
-3. Select the `.bin` file from `results/`.
-4. Use the timeline and playback controls to inspect the run; use the component controls to show or hide parts.
+To open playback, visit the [hosted WinchSim viewer](https://hui-aqua.github.io/WinchSim/), choose **Browse**, and select the `.bin` file from your generated `results/` folder. The viewer runs on GitHub Pages and reads the selected file in your browser; it does not upload the file. Use the timeline and playback controls to inspect the run, and the component controls to show or hide parts.
 
 The CSV can be opened in Excel or loaded into Python with `pandas.read_csv`. It contains time, equilibrium/convergence fields, line force and geometry information, and solved mesh node coordinates. The `.bin` stores the same numeric history in packed Float32 form with scene metadata.
 
