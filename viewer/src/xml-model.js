@@ -34,12 +34,21 @@ export function xmlToViewerResult(xmlText, name) {
     const sectionEl = comp.querySelector('wizard');
     const diameterMm = parseFloat(sectionEl?.getAttribute('outerDiameter') || '');
     const area = parseFloat(comp.querySelector('mooring')?.getAttribute('areal') || '');
-    const sectionRadius = Number.isFinite(diameterMm) ? diameterMm / 2000 : Number.isFinite(area) && area > 0 ? Math.sqrt(area / Math.PI) : undefined;
+    const dragWidth = parseFloat(comp.querySelector('loadmodel')?.getAttribute('dragArealy') || '');
+    const nominalDiameterMm = compName.match(/(\d+(?:\.\d+)?)\s*mm/i);
+    const trussRadius = Number.isFinite(area) && area > 0 ? Math.sqrt(area / Math.PI)
+      : Number.isFinite(dragWidth) && dragWidth > 0 ? dragWidth / 2
+      : nominalDiameterMm ? parseFloat(nominalDiameterMm[1]) / 2000
+      : 0.015;
+    const sectionRadius = Number.isFinite(diameterMm) && diameterMm > 0 ? diameterMm / 2000
+      : tag === 'truss' ? trussRadius
+      : Number.isFinite(area) && area > 0 ? Math.sqrt(area / Math.PI)
+      : undefined;
     let color = undefined;
     if (colorEl) {
-      const r = parseFloat(colorEl.getAttribute('red') || '0.5');
-      const g = parseFloat(colorEl.getAttribute('green') || '0.5');
-      const b = parseFloat(colorEl.getAttribute('blue') || '0.5');
+      const r = parseFloat(colorEl.getAttribute('red') || colorEl.getAttribute('x') || '0.5');
+      const g = parseFloat(colorEl.getAttribute('green') || colorEl.getAttribute('y') || '0.5');
+      const b = parseFloat(colorEl.getAttribute('blue') || colorEl.getAttribute('z') || '0.5');
       color = '#' + [r, g, b].map(v => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('');
     }
     components.push({ id: compId, label: compName, category, color, section_radius_m: sectionRadius });
@@ -64,6 +73,46 @@ export function xmlToViewerResult(xmlText, name) {
       }
     });
   });
+  let membraneIndex = 0;
+  xml.querySelectorAll('Components > membrane, components > membrane, membrane').forEach(comp => {
+    const elementNodes = comp.querySelectorAll('element');
+    if (!elementNodes.length) return;
+
+    const compId = comp.getAttribute('id') || comp.getAttribute('name') || `membrane-${++membraneIndex}`;
+    const compName = comp.getAttribute('name') || compId;
+    const colorEl = comp.querySelector('color');
+    let color;
+    if (colorEl) {
+      const channels = ['red', 'green', 'blue'].map((name, index) =>
+        parseFloat(colorEl.getAttribute(name) || colorEl.getAttribute(['x', 'y', 'z'][index]) || '0.06')
+      );
+      color = '#' + channels.map(value =>
+        Math.round(Math.max(0, Math.min(1, value)) * 255).toString(16).padStart(2, '0')
+      ).join('');
+    }
+
+    components.push({ id: compId, label: compName, category: 'membranes', color });
+    componentColors.set(compId, color || '#10b981');
+    elementNodes.forEach((el, index) => {
+      const nodeIds = ['nodeA', 'nodeB', 'nodeC', 'nodeD']
+        .map(attribute => el.getAttribute(attribute))
+        .filter(id => id !== null && id.trim() !== '');
+      if (nodeIds.length < 3 || nodeIds.some(id => !nodeMap.has(id))) return;
+
+      const id = el.getAttribute('id') || `${compId}-${index + 1}`;
+      elements.push({
+        id,
+        component_id: compId,
+        component_name: compName,
+        category: 'membranes',
+        role: 'membrane',
+        type: 'polygon',
+        nodes: nodeIds.map(nodeId => 'n-' + nodeId),
+        color: color || '#10b981'
+      });
+    });
+  });
+
   elements.forEach(element => { if (!element.color) element.color = componentColors.get(element.component_id); });
   const envEl = xml.querySelector('environment');
   const waterline = envEl ? parseFloat(envEl.getAttribute('waterline_z_m') || '0') : 0;
