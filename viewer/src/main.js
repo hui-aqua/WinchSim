@@ -169,10 +169,12 @@ function updateSelectedNodeInfo(){
     return;
   }
   if(!selectedElementRef)return;
-  const element=selectedElementRef,component=componentForElement(element),nodeRefs=elementNodeRefs(element),elementType=element.type||element.element_type||element.category||element.role||'Unknown',name=element.name||element.component_name||component?.name||component?.label||element.id||component?.id||'Unnamed element';
-  const id=element.id??name;$('node-info-title').textContent='Element '+id;
+  const element=selectedElementRef,component=componentForElement(element),nodeRefs=elementNodeRefs(element),category=String(element.category||component?.category||'').toLowerCase();
+  const elementType=category==='beams'?'Beam':category==='trusses'?'Truss':category==='membranes'?'Membrane':element.element_type||element.type||element.role||'Unknown';
+  const componentName=element.component_name||component?.label||component?.name||component?.id||'—',elementName=element.name||element.id||'—';
+  const id=element.id??elementName;$('node-info-title').textContent='Element '+id;
   $('node-coordinate-rows').hidden=true;$('element-info').hidden=false;
-  $('element-type').textContent=String(elementType);$('element-name').textContent=String(name);
+  $('element-type').textContent=String(elementType);$('element-component').textContent=String(componentName);$('element-name').textContent=String(elementName);
   $('element-nodes').textContent=nodeRefs.map(ref=>{const node=nodeById.get(ref);return String(node?.node_id??String(ref).replace(/^n-/,''))}).join(', ')||'—';
 }
 function selectNodeAt(event){
