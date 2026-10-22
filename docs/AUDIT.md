@@ -7,7 +7,7 @@
 
 WinchSim has a clear single-command solver workflow, AquaSim-compatible XML inputs, a browser viewer, packed playback output, CSV data, timestamped logs, and incremental result checkpoints. These are useful foundations for a user-facing simulation tool.
 
-The latest reviewed run, `results/model_roller_buoy_20261021_223240.log`, completed through 600 seconds and wrote 601 states. The initial OpenSees predictor failed once; the log shows both the solver warning and Python's captured runtime warning for this same event, followed by successful rigid-energy fallback. It records no errors. The output supports the conclusion that this run completed under its configured convergence criteria; it does not by itself verify the model against a physical experiment or engineering acceptance standard.
+A run reviewed on 21 October 2026 completed through 600 seconds and wrote 601 states. The initial OpenSees predictor failed once; the log showed both the solver warning and Python's captured runtime warning for this same event, followed by successful rigid-energy fallback. It recorded no errors. Generated run files are now excluded from the repository; these review notes remain as historical context. Completion under the configured convergence criteria does not verify the model against a physical experiment or engineering acceptance standard.
 
 No automated test suite was found during this review. The main project risk is therefore the gap between solver completion and independently validated physical accuracy, especially during waterline transitions and high-tension states.
 
@@ -35,7 +35,7 @@ No automated test suite was found during this review. The main project risk is t
 ## Run reviewed
 
 - Input: `input/model_roller_buoy.xml`
-- Log: `results/model_roller_buoy_20261021_223240.log`
+- Log: reviewed at the time; generated run artifacts are not retained in the repository
 - Requested duration: 600 s
 - Output: 601 states from 0 through 600 s
 - Status: `Solver run completed successfully`
@@ -44,4 +44,4 @@ No automated test suite was found during this review. The main project risk is t
 
 ## Repository maintenance
 
-Generated `__pycache__` files are being removed from version control and added to `.gitignore`. Local environments, editor folders, temporary files, and generated run logs are ignored. Input models, reference materials, source code, and CSV/binary outputs are not broadly ignored so the project does not hide user data by default.
+Generated `__pycache__` files are excluded from version control. Local environments, editor folders, temporary files, and all solver output under `results/` and `Reference/results/` are ignored. Input models, source code, and reference XML models remain versioned.

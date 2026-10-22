@@ -16,8 +16,9 @@ env/
 .env/
 .tox/
 
-# Generated run logs and temporary result-write files
-results/*.log
+# Generated simulation outputs
+/results/
+/Reference/results/
 solver/logs/
 *.tmp
 *.temp

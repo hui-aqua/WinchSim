@@ -92,8 +92,6 @@ Look for the last `INFO Solving equilibrium at t=...` and the matching outcome:
 
 An OpenSees predictor warning can be followed by a successful rigid-energy fallback. A predictor warning alone does not mean the run failed; use the final completion line and `results_complete` metadata.
 
-For the latest reviewed roller-buoy run (`results/model_roller_buoy_20261021_223240.log`), the solver completed through 600 s and wrote 601 states. Its initial OpenSees predictor failed once; the log reports this through both the solver warning and Python's captured runtime warning, then the rigid-energy fallback converged. There are no logged errors. This confirms completion for that input and configuration; it is not a structural safety certification or independent physical validation.
-
 ## 6. Model limits
 
 The current global analysis is quasi-static. It does not include inertia, dynamic impact, wave/current drag, pulley friction, or rope bending stiffness. The equilibrium model uses supplied material and buoyancy properties and has no component failure or allowable-load check. Very high calculated tension should therefore be reviewed against real component data. See [the audit](AUDIT.md) and [future work](TODO.md) for open engineering and software work.

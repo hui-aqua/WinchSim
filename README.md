@@ -33,7 +33,7 @@ The browser viewer is also available at [hui-aqua.github.io/WinchSim](https://hu
 | `input/model_roller.xml` | Lift routed over a fixed roller | 150 s |
 | `input/model_roller_buoy.xml` | Roller, lifting beam, buoy and lower slings | 600 s |
 
-The current roller-buoy input retrieves rope at 0.1 m/s until 500 s, then pays out at 0.1 m/s through 600 s. Its latest recorded run completed all 601 output states; an initial OpenSees predictor failure was handled by the rigid-energy fallback. See the [user guide](docs/USER_GUIDE.md), the [input file guide](docs/INPUT_FILE_GUIDE.md) for building a new case, and the [audit](docs/AUDIT.md) for current scope and known limitations.
+The current roller-buoy input retrieves rope at 0.1 m/s until 500 s, then pays out at 0.1 m/s through 600 s. See the [user guide](docs/USER_GUIDE.md), the [input file guide](docs/INPUT_FILE_GUIDE.md) for building a new case, and the [audit](docs/AUDIT.md) for current scope and known limitations.
 
 ## Results at a glance
 
