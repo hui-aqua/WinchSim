@@ -164,7 +164,7 @@ function updateSelectedNodeInfo(){
   if(selectedNodeRef){
     const position=positions.get(selectedNodeId);if(!position)return;
     const id=selectedNodeRef.node_id??String(selectedNodeRef.id).replace(/^n-/,'');$('node-info-title').textContent='Node '+id;
-    $('node-coordinate-rows').hidden=false;$('element-info').hidden=true;$('node-role-tools').hidden=!sourceXmlDoc;$('node-current-role').textContent=selectedNodeRef.source_role||'none';
+    $('node-coordinate-rows').hidden=false;$('element-info').hidden=true;$('node-current-role').textContent=selectedNodeRef.source_role||'none';
     for(let axis=0;axis<3;axis++)$('node-'+['x','y','z'][axis]).value=Number(position[axis]).toFixed(3);
     return;
   }
@@ -173,12 +173,12 @@ function updateSelectedNodeInfo(){
   const elementType=category==='beams'?'Beam':category==='trusses'?'Truss':category==='membranes'?'Membrane':element.element_type||element.type||element.role||'Unknown';
   const componentName=element.component_name||component?.label||component?.name||component?.id||'—',elementName=element.name||element.id||'—';
   const id=element.id??elementName;$('node-info-title').textContent='Element '+id;
-  $('node-coordinate-rows').hidden=true;$('node-role-tools').hidden=true;$('element-info').hidden=false;
+  $('node-coordinate-rows').hidden=true;$('element-info').hidden=false;
   $('element-type').textContent=String(elementType);$('element-component').textContent=String(componentName);$('element-name').textContent=String(elementName);
   $('element-nodes').textContent=nodeRefs.map(ref=>{const node=nodeById.get(ref);return String(node?.node_id??String(ref).replace(/^n-/,''))}).join(', ')||'—';
 }
-function selectNodeAt(event){
-  if(!showNodes||!nodeMarkerMeshes.length)return;
+function selectNodeAt(event,force=false){
+  if((!showNodes&&!force)||!nodeMarkerMeshes.length)return;
   const rect=canvas.getBoundingClientRect();activeCamera.updateMatrixWorld();nodePointer.x=((event.clientX-rect.left)/rect.width)*2-1;nodePointer.y=-((event.clientY-rect.top)/rect.height)*2+1;
   nodeRaycaster.setFromCamera(nodePointer,activeCamera);
   const hit=nodeRaycaster.intersectObjects(nodeMarkerMeshes,false)[0];let id=hit?.instanceId===undefined?null:hit.object.userData.instanceNodeIds[hit.instanceId];
@@ -198,7 +198,15 @@ function selectElementAt(event){
   }
   if(!element)return;selectedElementRef=element;selectedNodeRef=null;selectedNodeId=null;$('node-info').classList.add('open');updateSelectedNodeInfo();drawNodeLabels();
 }
-function selectAt(event){if(selectionMode==='node')selectNodeAt(event);else selectElementAt(event)}
+function selectAt(event){if(event.button===2){openNodeContextMenu(event);return}$('node-context-menu').hidden=true;if(selectionMode==='node')selectNodeAt(event);else selectElementAt(event)}
+function openNodeContextMenu(event){
+  event.preventDefault();selectedNodeId=null;selectedNodeRef=null;selectedElementRef=null;
+  selectNodeAt(event,true);
+  const menu=$('node-context-menu');if(!selectedNodeRef){menu.hidden=true;return}
+  if(!sourceXmlDoc){menu.hidden=true;toast('Load an XML or .amodel source model to assign solver roles.');return}
+  const label=String(selectedNodeRef.node_id??selectedNodeRef.id).replace(/^n-/,'');$('node-context-title').textContent='Node '+label;
+  menu.hidden=false;const bounds=menu.getBoundingClientRect();menu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-bounds.width-8))+'px';menu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-bounds.height-8))+'px';document.addEventListener('click',()=>{menu.hidden=true},{once:true});
+}
 function rebuildNodeMarkers(){
   for(const mesh of nodeMarkerMeshes){modelGroup.remove(mesh);mesh.geometry.dispose();mesh.material.dispose()}
   for(const key of [...renderables.keys()])if(String(key).startsWith('node-markers:'))renderables.delete(key);
@@ -207,10 +215,10 @@ function rebuildNodeMarkers(){
 function setSelectedNodeRole(role){
   if(!sourceXmlDoc||!selectedNodeRef)return;
   const sourceId=String(selectedNodeRef.node_id),currentRole=selectedNodeRef.source_role||'',protectedRoles=new Set(['upper_joint','lower_joint','buoy_top']);
-  if(currentRole===role){$('node-role-status').textContent=`Node ${sourceId} is already assigned as ${role}.`;return}
-  if(protectedRoles.has(currentRole)&&currentRole!==role){$('node-role-status').textContent=`Cannot replace the required ${currentRole} role; the solver needs that node.`;return}
+  if(currentRole===role){toast(`Node ${sourceId} is already assigned as ${role}.`);return}
+  if(protectedRoles.has(currentRole)&&currentRole!==role){toast(`Cannot replace the required ${currentRole} role; the solver needs that node.`);return}
   const xmlNodes=[...sourceXmlDoc.querySelectorAll('node')],target=xmlNodes.find(node=>node.getAttribute('id')===sourceId);
-  if(!target){$('node-role-status').textContent='Could not find this node in the source model.';return}
+  if(!target){toast('Could not find this node in the source model.');return}
   const replaced=[];
   for(const node of xmlNodes){if(node!==target&&node.getAttribute('role')===role){replaced.push(node.getAttribute('id'));node.removeAttribute('role')}}
   const referenceRoles=role==='roller'?null:new Set(['main_rope']);
@@ -230,7 +238,7 @@ function setSelectedNodeRole(role){
   let message=`Node ${sourceId} is now ${role}. Save the model to download the changes.`;
   if(role==='roller'&&!([...sourceXmlDoc.querySelectorAll('element[role="roller_body"]')].some(element=>['StartNode_ID','startNodeId','EndNode_ID','endNodeId'].some(attr=>element.getAttribute(attr)===sourceId))))message+=' A solver-ready roller also needs a roller_body beam and two connected truss legs.';
   if(role==='winch'&&!([...sourceXmlDoc.querySelectorAll('element[role="main_rope"]')].some(element=>['StartNode_ID','startNodeId','EndNode_ID','endNodeId'].some(attr=>element.getAttribute(attr)===sourceId))))message+=' Ensure a main_rope line connects to this node.';
-  $('node-role-status').textContent=message;
+  $('node-context-menu').hidden=true;toast(message);
   if(replaced.length){buildScene();viewBounds.setFromObject(modelGroup)}else rebuildNodeMarkers();
   updateSelectedNodeInfo();draw();
 }
