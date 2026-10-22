@@ -165,6 +165,32 @@ Use two connected `main_rope` elements: winch to roller, then roller to upper jo
 
 The global solver needs a main-rope leg connected to an `upper_joint`. When the schedule commands nonzero winch motion, exactly one such active leg must be identifiable.
 
+Model the roller as a beam component with `role="roller_body"`. Exactly two truss elements must connect to the beam endpoint marked `role="roller"`, and those trusses must have the same component `name` as the roller beam. (The XML keeps beam and truss component IDs separate because they are different element types.) Set `allowed_rope_components` on the beam component to a comma-separated list of truss component IDs permitted to pass through the roller. A rope attached at the roller head but omitted from this list is not an allowed pass-through route. The beam's other endpoint is an ordinary node: it can be fixed by assigning a fixed role or connected to rope or other beam elements. Use `structural_model="elastic"` to calculate beam end loads. For example:
+
+```xml
+<beam id="roller1" name="Roller support" property_set="roller_beam"
+      structural_model="elastic" allowed_rope_components="rope1">
+  <!-- section and material properties -->
+  <elements><element id="11" StartNode_ID="8" EndNode_ID="6" role="roller_body" /></elements>
+</beam>
+```
+
+Elastic beam results include local end axial force, two shear forces, torsion, and two bending moments. Fixed nodes report global reaction forces and moments.
+
+### Mechanical model behind the roller representation
+
+The rope does not terminate at the roller. It is represented by two tension-only truss elements that share the roller head node. Each truss element applies its axial force along its own current direction. The resultant load transferred to the roller head is the vector sum of those two rope forces (plus any other loads explicitly connected at that node). For rope tensions \(T_1\), \(T_2\) and unit vectors \(\mathbf{u}_1\), \(\mathbf{u}_2\) pointing away from the head along the rope legs, the rope load on the head is:
+
+\[
+\mathbf{F}_{rope} = -T_1\mathbf{u}_1 - T_2\mathbf{u}_2.
+\]
+
+This vector view matters: two equal tensions can still produce a nonzero resultant when the rope changes direction. For a symmetric reversal through angle \(\theta\), the resultant magnitude is \(2T\sin(\theta/2)\). The angle and the two independently calculated tensions determine the load direction and magnitude; no separate point-force approximation is needed.
+
+The `roller_body` beam joins the rope head to the support or connected structure. Its end forces and moments are the internal actions required to transfer the head load through that member. In the beam's local axes, the solver writes axial force \(N\), two shear components \(V_y,V_z\), torsion \(M_x\), and bending moments \(M_y,M_z\) at both ends. Their signs follow the beam's element node order and local-axis convention. The opposite end is an ordinary structural node, so its equilibrium is determined by whatever is attached there: a fixed boundary, a rope, another beam, or a combination. Reactions at fixed nodes are support reactions, while the beam end forces describe the member action at its connections.
+
+The current roller rule is a connectivity rule: one `roller_body` beam has exactly one endpoint with role `roller`, and exactly two truss elements meet at that head. It does not model a finite-diameter rotating sheave, contact pressure, wrap-angle evolution, bearing details, or frictional tension ratio. The two rope legs remain separate tension-only elements, so their tensions may differ because of their material lengths and equilibrium. The elastic beam solver calculates small-deformation beam response using the supplied section and material properties; use appropriate properties and independently check results before design use.
+
 ### Connect a lifted structure with slings
 
 Create a truss line from `upper_joint` to each supported lifting point and assign `role="upper_sling"`. For lower slings, connect the beam lifting points to a shared `lower_joint` and use `role="lower_sling"`. These labels help output and scene interpretation; the geometry and connectivity still determine the mechanics.
@@ -189,6 +215,8 @@ The supplied buoy is represented by a beam component with a single vertical axis
 ```
 
 This is the current line-based buoy approximation. The buoy axis is vertical, and immersion is calculated along that axis. Check submerged buoyancy and dry weight against the buoy’s actual displacement and mass. A buoy attached to lifting slings can be pulled above the water if sling tension exceeds its buoyant support; the solver does not enforce the waterline as a solid boundary.
+
+For the supplied 50 m retrieval schedule, the lower slings have an explicit 45 m rest length. The maximum distance from the freely floating buoy bottom to a lifting-beam corner is about 40.9 m, so this leaves slack for the buoy to remain at the surface. If `rest_length_m` is omitted, WinchSim uses the initial endpoint spacing (about 6–9 m here); those short slings become taut and hoist the buoy out of the water as the beam rises. Set this value from the real sling length and the full winch travel for other models.
 
 ## 10. Set winch motion
 

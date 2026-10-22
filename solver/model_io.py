@@ -108,6 +108,8 @@ def model_to_xml(cfg: dict) -> str:
             comp_attrs["structural_model"] = str(comp["structural_model"])
         if "rotation_behavior" in comp:
             comp_attrs["rotation_behavior"] = str(comp["rotation_behavior"])
+        if "allowed_rope_components" in comp:
+            comp_attrs["allowed_rope_components"] = ",".join(map(str, comp["allowed_rope_components"]))
 
         comp_elem = ET.SubElement(components_elem, tag_name, comp_attrs)
 
@@ -344,6 +346,7 @@ def xml_to_model(xml_content_or_path) -> dict:
             node_dict["role"] = node_el.attrib["role"]
         nodes.append(node_dict)
 
+
     # 4. Components & Lines & Elements
     components = {}
     elements = {}
@@ -369,6 +372,11 @@ def xml_to_model(xml_content_or_path) -> dict:
             comp_data["structural_model"] = comp_el.attrib["structural_model"]
         if "rotation_behavior" in comp_el.attrib:
             comp_data["rotation_behavior"] = comp_el.attrib["rotation_behavior"]
+        if "allowed_rope_components" in comp_el.attrib:
+            comp_data["allowed_rope_components"] = [
+                value.strip() for value in comp_el.attrib["allowed_rope_components"].split(",")
+                if value.strip()
+            ]
         components[comp_id] = comp_data
 
         # Parse property set for elements dict

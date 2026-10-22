@@ -36,7 +36,11 @@ def force_acceptance_n(cfg, model):
         raise ValueError("solver.equilibrium_force_acceptance_n must be finite and non-negative")
     if relative <= 0.0 or not math.isfinite(relative):
         raise ValueError("solver.equilibrium_relative_force_tolerance must be positive and finite")
-    return max(absolute, relative * force_reference_n(cfg, model))
+    # The system-wide relative threshold must not drown out the force scale of
+    # a small, freely floating component.  The absolute value is a hard ceiling;
+    # the relative value may make the target stricter for a small system.
+    relative_acceptance = relative * force_reference_n(cfg, model)
+    return relative_acceptance if absolute == 0.0 else min(absolute, relative_acceptance)
 
 
 def solve(cfg, model, time_s, initial_positions=None):
@@ -58,6 +62,11 @@ def solve(cfg, model, time_s, initial_positions=None):
     layout, x0, member_nodes = [], [], set()
     for component_id, ids_set in model["component_nodes"].items():
         ids = sorted(ids_set)
+        # Components whose member nodes are all prescribed supports have no
+        # equilibrium unknowns. Keep their input coordinates fixed instead of
+        # introducing a free rigid-body motion for a grounded support beam.
+        if set(ids).issubset(fixed):
+            continue
         member_nodes.update(ids)
         reference_center = np.mean([model["xyz"][i] for i in ids], axis=0)
         local = np.array([model["xyz"][i] for i in ids]) - reference_center
@@ -162,7 +171,10 @@ def solve(cfg, model, time_s, initial_positions=None):
         grad = {i: np.zeros(3) for i in p}
         energy = 0.0
 
-        # Weight and buoyancy potential, integrated over each member.
+        # Integrate loads over the deformed mesh. A slack rope can take a very
+        # different path from its endpoint chord; applying its full material
+        # length to that chord gives the wrong submerged length and pulls the
+        # buoy as if the rope were still straight.
         for line in model["truss_lines"] + model["beam_lines"]:
             props = cfg["elements"][components[line["component_id"]]["property_set"]]
             if line.get("role") == "buoy_body":
@@ -185,23 +197,32 @@ def solve(cfg, model, time_s, initial_positions=None):
                     "waterline_transition_diameter_m",
                     props.get("diameter_m", default_diameter),
                 ))
-            a_id, b_id = line["nodes"]
-            a, b = p[a_id], p[b_id]
-            length0 = (model["references"][line["id"]] if line["element_type"] == "truss"
-                       else math.dist(model["xyz"][a_id], model["xyz"][b_id]))
-            breaks = [0.0, 1.0]
-            if width <= 0.0 and (a[2] - waterline) * (b[2] - waterline) < 0.0:
-                breaks.insert(1, (waterline - a[2]) / (b[2] - a[2]))
-            for s0, s1 in zip(breaks, breaks[1:]):
-                for point, weight in zip(gx, gw):
-                    s = s0 + (s1 - s0) * point
-                    w = (s1 - s0) * weight
-                    z = (1.0 - s) * a[2] + s * b[2]
-                    mass, potential = mass_potential(z, air, water, width)
-                    energy += length0 * w * potential
-                    f = length0 * w * gravity * mass
-                    grad[a_id][2] += f * (1.0 - s)
-                    grad[b_id][2] += f * s
+            if line["element_type"] == "truss":
+                chain = model["chains"][line["id"]]
+                total_length = model["references"][line["id"]]
+                if line["id"] == moving_line:
+                    total_length -= displacement
+                segments = [(a_id, b_id, total_length / (len(chain) - 1))
+                            for a_id, b_id in zip(chain, chain[1:])]
+            else:
+                a_id, b_id = line["nodes"]
+                segments = [(a_id, b_id, math.dist(model["xyz"][a_id], model["xyz"][b_id]))]
+
+            for a_id, b_id, length0 in segments:
+                a, b = p[a_id], p[b_id]
+                breaks = [0.0, 1.0]
+                if width <= 0.0 and (a[2] - waterline) * (b[2] - waterline) < 0.0:
+                    breaks.insert(1, (waterline - a[2]) / (b[2] - a[2]))
+                for s0, s1 in zip(breaks, breaks[1:]):
+                    for point, weight in zip(gx, gw):
+                        s = s0 + (s1 - s0) * point
+                        w = (s1 - s0) * weight
+                        z = (1.0 - s) * a[2] + s * b[2]
+                        mass, potential = mass_potential(z, air, water, width)
+                        energy += length0 * w * potential
+                        f = length0 * w * gravity * mass
+                        grad[a_id][2] += f * (1.0 - s)
+                        grad[b_id][2] += f * s
 
         # Exact tension-only axial strain energy; slack links have no force.
         for line in model["truss_lines"]:
@@ -247,6 +268,10 @@ def solve(cfg, model, time_s, initial_positions=None):
             else:
                 _, i, offset = item
                 g[offset:offset + 3] = grad[i]
+        if not math.isfinite(float(energy)) or not np.all(np.isfinite(g)):
+            raise FloatingPointError(
+                f"Non-finite energy or force encountered at t={time_s:.6g} s"
+            )
         last_evaluation["x"] = np.array(x, copy=True)
         last_evaluation["force"] = np.array(g, copy=True)
         return energy, g
@@ -290,9 +315,11 @@ def solve(cfg, model, time_s, initial_positions=None):
     # reaction. It is balanced by the surface constraint and must be removed
     # from the free-force residual. L-BFGS-B's projected gradient uses this
     # same KKT convention.
-    force_residual = result.jac.copy()
+    solution_x = result.x
+    final_energy, final_gradient = evaluate(solution_x)
+    force_residual = final_gradient.copy()
     for index, (lower, upper_bound) in enumerate(bounds):
-        coordinate = result.x[index]
+        coordinate = solution_x[index]
         if upper_bound is not None and coordinate >= upper_bound - 1e-7 and force_residual[index] < 0.0:
             force_residual[index] = 0.0
         if lower is not None and coordinate <= lower + 1e-7 and force_residual[index] > 0.0:
@@ -318,14 +345,44 @@ def solve(cfg, model, time_s, initial_positions=None):
     for item in layout:
         if item[0] == "body":
             _, _, ids, _, local, fixed_rotation, offset = item
-            trans = result.x[offset:offset + 3]
-            rv = np.zeros(3) if fixed_rotation else result.x[offset + 3:offset + 6]
+            trans = solution_x[offset:offset + 3]
+            rv = np.zeros(3) if fixed_rotation else solution_x[offset + 3:offset + 6]
             rot = Rotation.from_rotvec(rv)
             for i, q in zip(ids, local):
                 positions[i] = trans + rot.apply(q)
         else:
             _, i, offset = item
-            positions[i] = result.x[offset:offset + 3]
+            positions[i] = solution_x[offset:offset + 3]
+
+    # The energy solve gives exactly zero axial force to a slack cable, so its
+    # intermediate nodes otherwise have no length constraint and can collapse
+    # into an arbitrary short path. Reconstruct slack lower-sling profiles at
+    # their fixed material length under the configured air/water line loads.
+    from analysis.roller_buoy import equilibrate_truss_path, numerical_options
+    numerics = numerical_options(cfg)
+    waterline = float(cfg["environment"]["waterline_z_m"])
+    gravity = float(cfg["environment"]["gravity_m_per_s2"])
+    for line in model["truss_lines"]:
+        if line.get("role") != "lower_sling":
+            continue
+        chain = model["chains"][line["id"]]
+        material_length = model["references"][line["id"]]
+        chord = math.dist(positions[chain[0]], positions[chain[-1]])
+        slack_tolerance = max(1e-8, material_length * 1e-10)
+        if chord >= material_length - slack_tolerance:
+            continue
+        props = cfg["elements"][components[line["component_id"]]["property_set"]]
+        area = float(props["cross_section_area_m2"])
+        diameter = math.sqrt(4.0 * area / math.pi) if area > 0.0 else 0.0
+        profile = equilibrate_truss_path(
+            positions[chain[0]], positions[chain[-1]], material_length,
+            waterline, float(props["line_mass_in_air_kg_per_m"]),
+            float(props.get("net_line_mass_in_water_kg_per_m", 0.0)),
+            gravity, diameter / 2.0, len(chain) - 1, numerics,
+        )
+        for node_id, point in zip(chain[1:-1], profile[1:-1]):
+            positions[node_id] = np.asarray(point, dtype=float)
+
     tensions = {}
     for line in model["truss_lines"]:
         props = cfg["elements"][components[line["component_id"]]["property_set"]]
@@ -353,16 +410,22 @@ def solve(cfg, model, time_s, initial_positions=None):
             air = float(props["line_mass_in_air_kg_per_m"])
             water = float(props.get("net_line_mass_in_water_kg_per_m", air))
             width = float(props.get("waterline_transition_diameter_m", 0.0))
-        a, b = positions[line["nodes"][0]], positions[line["nodes"][1]]
-        length0 = (model["references"][line["id"]] -
-                   (displacement if line["id"] == moving_line else 0.0)
-                   if line["element_type"] == "truss" else
-                   math.dist(model["xyz"][line["nodes"][0]], model["xyz"][line["nodes"][1]]))
-        fraction_air = segment_air_fraction(
-            a[2], b[2], waterline, width,
-            circular_section=line.get("role") != "buoy_body" and width > 0.0,
-        )
-        total_mass += length0 * (water + (air - water) * fraction_air)
+        if line["element_type"] == "truss":
+            chain = model["chains"][line["id"]]
+            length0 = (model["references"][line["id"]] -
+                       (displacement if line["id"] == moving_line else 0.0)) / (len(chain) - 1)
+            segments = [(positions[a_id], positions[b_id], length0)
+                        for a_id, b_id in zip(chain, chain[1:])]
+        else:
+            a_id, b_id = line["nodes"]
+            segments = [(positions[a_id], positions[b_id],
+                         math.dist(model["xyz"][a_id], model["xyz"][b_id]))]
+        for a, b, length0 in segments:
+            fraction_air = segment_air_fraction(
+                a[2], b[2], waterline, width,
+                circular_section=line.get("role") != "buoy_body" and width > 0.0,
+            )
+            total_mass += length0 * (water + (air - water) * fraction_air)
     support = [0.0, 0.0, total_mass * gravity]
     # Summed support reaction follows vertical global force balance.
     return positions, support, tensions, int(result.nit), residual, chknorm_state["value"]

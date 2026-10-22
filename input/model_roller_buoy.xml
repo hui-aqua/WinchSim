@@ -6,14 +6,19 @@
     <node id="2" x="5" y="-5" z="-10"/>
     <node id="3" x="5" y="5" z="-10"/>
     <node id="4" x="-5" y="5" z="-10"/>
-    <node id="10" x="-5" y="-5" z="-20"/>
     <node id="5" x="0" y="0" z="-5" name="upper_joint" role="upper_joint"/>
     <node id="6" x="0" y="0" z="-7.5" name="buoy_bottom_lower_joint" role="lower_joint"/>
-    <node id="7" x="0" y="0" z="50" name="fixed_roller" role="roller"/>
+    <node id="7" x="0" y="0" z="50" name="roller_rope_joint" role="roller"/>
+    <node id="11" x="0" y="0" z="50.1" name="roller_anchor" role="fixed"/>
     <node id="8" x="40" y="0" z="10" name="fixed_winch" role="winch"/>
     <node id="9" x="0" y="0" z="-7" name="buoy_top" role="buoy_top"/>
   </Nodes>
   <Components>
+    <beam id="roller1" name="Roller assembly" property_set="roller_beam" structural_model="elastic" allowed_rope_components="rope1">
+      <wizard type="circular" outerDiameter="300" eModulus="2.1000E+11" gModulus="8.0769E+10"/>
+      <materials young="2.1000E+11" shear="8.0769E+10" crossectionareal="0.0706858" iy="0.0003976" iz="0.0003976" it="0.0007952" weightInAir="0" effectiveLineMassInWater="0"/>
+      <elements><element id="20" StartNode_ID="11" EndNode_ID="7" name="roller_body" role="roller_body"/></elements>
+    </beam>
     <beam id="beam1" name="Lifting beam" property_set="beam" structural_model="rigid">
       <wizard type="circular" outerDiameter="500.0" eModulus="1.1000E+09" gModulus="3.8400E+08"/>
       <materials young="1.1000E+09" shear="3.8400E+08" crossectionareal="6.490894E-02" iy="1.693131E-03" iz="1.693131E-03" it="3.386262E-03" weightInAir="283.9800" effectiveLineMassInWater="82.7217"/>
@@ -26,7 +31,6 @@
         <element id="3" StartNode_ID="3" EndNode_ID="4" name="beam_edge_3"/>
         <element id="4" StartNode_ID="4" EndNode_ID="1" name="beam_edge_4"/>
         <element id="16" StartNode_ID="4" EndNode_ID="2" name="beam_edge_5"/>
-        <element id="17" StartNode_ID="1" EndNode_ID="10" name="beam_edge_6"/>
       </elements>
     </beam>
     <beam id="buoy1" name="Buoy" property_set="buoy" structural_model="rigid" rotation_behavior="fixed">
@@ -39,7 +43,7 @@
         <element id="15" StartNode_ID="6" EndNode_ID="9" name="buoy_body_axis" role="buoy_body"/>
       </elements>
     </beam>
-    <truss id="rope1" name="Main rope" property_set="truss">
+    <truss id="rope1" name="Roller assembly" property_set="truss">
       <mooring weightInAir="0.076150" netLineMassInWater="-0.00043125" areal="7.850000E-05" young="6.0000E+10" noCompressionForces="true"/>
       <description active="true" visible="true">
         <color red="0.6800" green="0.5600" blue="0.9200"/>
@@ -62,6 +66,7 @@
         <element id="8" StartNode_ID="5" EndNode_ID="2" name="upper_sling_2" role="upper_sling"/>
         <element id="9" StartNode_ID="5" EndNode_ID="3" name="upper_sling_3" role="upper_sling"/>
         <element id="10" StartNode_ID="5" EndNode_ID="4" name="upper_sling_4" role="upper_sling"/>
+        <element id="19" StartNode_ID="5" EndNode_ID="1" name="upper_sling_4" role="upper_sling"/>
       </elements>
     </truss>
     <truss id="rope3" name="Lower slings" property_set="truss">
@@ -70,19 +75,22 @@
         <color red="0.2500" green="0.7800" blue="0.7500"/>
       </description>
       <elements>
-        <element id="12" StartNode_ID="6" EndNode_ID="2" name="lower_sling_2" role="lower_sling" subdivisions="24"/>
-        <element id="13" StartNode_ID="6" EndNode_ID="3" name="lower_sling_3" role="lower_sling" subdivisions="24"/>
-        <element id="14" StartNode_ID="6" EndNode_ID="4" name="lower_sling_4" role="lower_sling" subdivisions="24"/>
+        <!-- 45 m preserves slack through the 50 m hoist (max float-to-anchor span is about 40.9 m). -->
+        <element id="12" StartNode_ID="6" EndNode_ID="2" name="lower_sling_2" role="lower_sling" subdivisions="24" rest_length_m="45.0"/>
+        <element id="13" StartNode_ID="6" EndNode_ID="3" name="lower_sling_3" role="lower_sling" subdivisions="24" rest_length_m="45.0"/>
+        <element id="14" StartNode_ID="6" EndNode_ID="4" name="lower_sling_4" role="lower_sling" subdivisions="24" rest_length_m="45.0"/>
+        <element id="21" StartNode_ID="6" EndNode_ID="1" name="lower_sling_1" role="lower_sling" subdivisions="24" rest_length_m="45.0"/>
       </elements>
     </truss>
   </Components>
+
   <winch mode="prescribed_speed">
     <motion_schedule>
       <point time_s="0.0" speed_m_per_s="0.1" direction="in"/>
       <point time_s="500.0" speed_m_per_s="0.1" direction="out"/>
     </motion_schedule>
   </winch>
-  <solver duration_s="600.0" analysis_method="global_quasi_static_equilibrium" time_step_s="1.0" continuation_min_step_s="0.001" equilibrium_method="opensees_global_nonlinear_static_equilibrium" default_truss_subdivisions="8" analysis_substeps="30" hydrostatic_iterations="1" hydrostatic_position_tolerance_m="0.005" hydrostatic_relaxation="0.7" force_tolerance_n="0.1" max_newton_iterations="100" dynamic_effects_enabled="false" output_bin="results/roller_buoy_results.bin" output_csv="results/roller_buoy_results.csv" truss_compression_regularization_ratio="0.001" slack_tension_threshold_n="1.0" equilibrium_max_iterations="10000" equilibrium_force_acceptance_n="25.0" equilibrium_relative_force_tolerance="0.005" aquasim_convergence_criteria="1.0" equilibrium_optimizer="L-BFGS-B">
+  <solver duration_s="600.0" analysis_method="global_quasi_static_equilibrium" time_step_s="1.0" continuation_min_step_s="0.001" equilibrium_method="opensees_global_nonlinear_static_equilibrium" default_truss_subdivisions="8" analysis_substeps="60" hydrostatic_iterations="1" hydrostatic_position_tolerance_m="0.005" hydrostatic_relaxation="0.7" force_tolerance_n="0.1" max_newton_iterations="100" dynamic_effects_enabled="false" output_bin="results/roller_buoy_results.bin" output_csv="results/roller_buoy_results.csv" truss_compression_regularization_ratio="0.001" slack_tension_threshold_n="1.0" equilibrium_max_iterations="10000" equilibrium_force_acceptance_n="25.0" equilibrium_relative_force_tolerance="0.005" aquasim_convergence_criteria="1.0" equilibrium_optimizer="L-BFGS-B">
     <numerics path_gradient_iterations="140" path_initial_step_fraction="0.03" path_minimum_step_m="1e-05" path_maximum_step_fraction="0.12" path_step_growth="1.04" path_minimum_step_fraction="1e-07" bend_stiffness_ratio="0.002" link_relative_tolerance="0.0001" link_absolute_tolerance_m="1e-08" initialization_bisection_iterations="80" initial_projection_sweeps="18" trial_projection_sweeps="5" final_projection_sweeps="400" projection_retry_sweeps="800,1600,3200,6400" floating_contact_tolerance_m="0.01"/>
   </solver>
 </model>

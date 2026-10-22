@@ -35,8 +35,33 @@ def _xyz_distance(positions, a, b):
 
 
 def _is_rigid_model(cfg, model):
-    return all(cfg["components"][component_id].get("structural_model", "rigid") == "rigid"
-               for component_id in model["component_nodes"])
+    fixed_nodes = model["fixed_nodes"]
+    for component_id in model["component_nodes"]:
+        component_lines = [line for line in model["beam_lines"]
+                           if line["component_id"] == component_id]
+        if cfg["components"][component_id].get("structural_model", "rigid") == "rigid":
+            continue
+        # A roller support beam with both endpoints fixed has no structural
+        # degrees of freedom. Do not force otherwise-rigid assemblies through
+        # the elastic OpenSees path just because this inactive beam is marked
+        # elastic to provide roller metadata/section properties.
+        if (component_lines
+                and all(line.get("role") == "roller_body"
+                        and set(line["nodes"]).issubset(fixed_nodes)
+                        for line in component_lines)):
+            continue
+        return False
+    return True
+
+
+def _has_grounded_elastic_roller(cfg, model):
+    fixed_nodes = model["fixed_nodes"]
+    return any(
+        line.get("role") == "roller_body"
+        and set(line["nodes"]).issubset(fixed_nodes)
+        and cfg["components"][line["component_id"]].get("structural_model") == "elastic"
+        for line in model["beam_lines"]
+    )
 
 
 def _beam_properties(cfg, component_id):
@@ -116,6 +141,9 @@ def prepare_model(cfg):
             truss_lines.append(line)
         elif line["element_type"] == "beam":
             behavior = str(component.get("structural_model", "rigid")).lower()
+            if any(line.get("role") == "roller_body" and line["component_id"] == component_id
+                   for line in beam_lines):
+                behavior = "elastic"
             if behavior not in ("rigid", "elastic"):
                 raise ValueError(
                     f"components.{component_id}.structural_model must be 'rigid' or 'elastic'"
@@ -171,12 +199,55 @@ def prepare_model(cfg):
         chain.append(b_id)
         chains[line["id"]] = chain
 
+    roller_body_lines = [line for line in beam_lines if line.get("role") == "roller_body"]
     fixed_roles = {"roller", "winch", "fixed", "fixed_position", "anchor"}
     fixed_nodes = {node_id for node_id, role in roles.items() if role in fixed_roles}
+    for line in roller_body_lines:
+        ends = list(map(int, line["nodes"]))
+        heads = [node_id for node_id in ends if roles.get(node_id) == "roller"]
+        if len(heads) != 1:
+            raise ValueError(f"roller_body beam {line['id']} must have exactly one endpoint with role 'roller'")
+        head = heads[0]
+        attached = [member for member in truss_lines if head in member["nodes"]]
+        if len(attached) != 2:
+            raise ValueError(f"roller_body beam {line['id']} head node {head} must connect to exactly two truss elements")
+        beam_component = str(line["component_id"])
+        beam_component_name = str(components[beam_component].get("name", beam_component))
+        if any(str(components[str(member["component_id"])].get("name", member["component_id"]))
+               != beam_component_name for member in attached):
+            raise ValueError(
+                f"Both truss elements at roller head {head} must have the same component name "
+                f"as roller_body beam {line['id']} ({beam_component_name!r})"
+            )
+        roller_component = components[beam_component]
+        allowed = set(map(str, roller_component.get("allowed_rope_components", [])))
+        if not allowed:
+            raise ValueError(
+                f"Roller beam component {beam_component!r} must define allowed_rope_components"
+            )
+        known_rope_components = {str(member["component_id"]) for member in truss_lines}
+        unknown = allowed - known_rope_components
+        if unknown:
+            raise ValueError(
+                f"Roller beam component {beam_component!r} allows unknown truss components: "
+                + ", ".join(sorted(unknown))
+            )
+        # Build truss connectivity by component. A pass-through rope is a
+        # connected path that enters and leaves the roller head.
+        for rope_component in allowed:
+            members = [member for member in truss_lines
+                       if str(member["component_id"]) == rope_component]
+            degree = sum(head in member["nodes"] for member in members)
+            if degree < 2:
+                raise ValueError(
+                    f"Allowed rope component {rope_component!r} must have at least two truss legs "
+                    f"at roller head {head}"
+                )
+    for node_id, role in roles.items():
+        if role == "roller" and not any(node_id in line["nodes"] for line in roller_body_lines):
+            raise ValueError(f"roller node {node_id} must be an endpoint of a roller_body beam")
     for role in ("roller", "winch"):
         found = [node_id for node_id, value in roles.items() if value == role]
-        if role == "roller" and cfg.get("winch", {}).get("route") == "fixed_roller" and not found:
-            raise ValueError("A fixed_roller winch route requires one node with role 'roller'")
     return {
         "nodes": nodes, "xyz": xyz, "roles": roles, "truss_lines": truss_lines,
         "beam_lines": beam_lines, "component_nodes": component_nodes,
@@ -275,7 +346,7 @@ def _solver_once(cfg, model, time_s, load_positions):
     for line in model["beam_lines"]:
         component_id = line["component_id"]
         component = cfg["components"][component_id]
-        if component["structural_model"] == "rigid":
+        if component["structural_model"] == "rigid" and line.get("role") != "roller_body":
             continue
         props = _beam_properties(cfg, component_id)
         a_id, b_id = line["nodes"]
@@ -421,17 +492,41 @@ def _solver_once(cfg, model, time_s, load_positions):
     max_iterations = int(cfg.get("solver", {}).get("max_newton_iterations", 100))
     substeps = int(cfg.get("solver", {}).get("analysis_substeps", 4))
     ops.test("NormUnbalance", tolerance, max_iterations, 0)
-    ops.algorithm("Newton")
     ops.integrator("LoadControl", 1.0 / substeps)
     ops.analysis("Static")
-    status = ops.analyze(substeps)
-    if status != 0:
-        ops.algorithm("NewtonLineSearch")
-        status = ops.analyze(substeps)
+    # Tangent stiffness changes abruptly as tension-only cable segments enter
+    # or leave the taut set. Advance one load increment at a time so a failed
+    # algorithm can be retried at the same load factor without accidentally
+    # applying a second full set of increments.
+    strategies = (
+        ("Newton", ()),
+        ("NewtonLineSearch", ("-type", "Bisection")),
+        ("KrylovNewton", ()),
+        ("ModifiedNewton", ("-initial",)),
+        ("BFGS", ()),
+    )
+    status = 0
+    failures = []
+    for load_step in range(substeps):
+        step_failures = []
+        for algorithm, options in strategies:
+            try:
+                ops.algorithm(algorithm, *options)
+                status = ops.analyze(1)
+            except Exception as error:
+                step_failures.append(f"{algorithm}: {error}")
+                continue
+            if status == 0:
+                break
+            step_failures.append(f"{algorithm}: status {status}")
+        if status != 0:
+            failures = step_failures
+            break
     if status != 0:
         raise RuntimeError(
             f"Global static equilibrium failed at t={time_s:.3f} s (OpenSees status {status}). "
-            "Check supports, connectivity, component section properties, and cable lengths."
+            "Tried " + "; ".join(failures) + ". Check supports, connectivity, component "
+            "section properties, and cable lengths."
         )
 
     # OpenSees nodeCoord reports the undeformed coordinates; add the solved
@@ -441,6 +536,11 @@ def _solver_once(cfg, model, time_s, load_positions):
                   for axis in range(3)]
         for node_id in node_xyz
     }
+    beam_forces = {}
+    for line_id, element_tag in beam_element_tags.items():
+        response = ops.eleResponse(element_tag, "localForce")
+        if response and len(response) >= 12:
+            beam_forces[line_id] = [float(value) for value in response[:12]]
     reactions = {}
     ops.reactions()
     reaction = [0.0, 0.0, 0.0]
@@ -463,12 +563,11 @@ def _solver_once(cfg, model, time_s, load_positions):
                 if force_values else 1.0
             ),
         }
-    return positions, reaction, tensions
+    return positions, reaction, tensions, beam_forces
 
 
 def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_time_s=None):
-    if all(cfg["components"][component_id].get("structural_model", "rigid") == "rigid"
-           for component_id in model["component_nodes"]):
+    if _is_rigid_model(cfg, model):
         from analysis.rigid_equilibrium import solve as solve_rigid
         guess = {**model["xyz"], **model["internal_nodes"]}
         if initial_load_positions:
@@ -489,7 +588,7 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
         # OpenSees supplies a useful initial geometry, but rebuilding its full
         # nonlinear model at every output time is redundant. Later states use
         # the previous converged equilibrium as their continuation start.
-        if initial_load_positions is None:
+        if initial_load_positions is None and not _has_grounded_elastic_roller(cfg, model):
             predictor_start = perf_counter()
             try:
                 guess, _, _ = _solver_once(cfg, model, time_s, guess)
@@ -517,7 +616,12 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
         logging.info("Rigid equilibrium solve at t=%.3f s completed in %.3f s "
                      "(iterations=%s, force residual=%.6g N)",
                      time_s, perf_counter() - rigid_start, solution[3], solution[4])
-        return solution
+        # Rigid equilibrium returns (positions, reaction, tensions,
+        # iterations, force_residual, chknorm). Normalize it to the shared
+        # seven-field shape used by the OpenSees path, which also includes
+        # beam end forces.
+        return (solution[0], solution[1], solution[2], {},
+                solution[3], solution[4], solution[5])
     load_positions = {**model["xyz"], **model["internal_nodes"]}
     if initial_load_positions:
         load_positions.update({node_id: list(position) for node_id, position in initial_load_positions.items()
@@ -544,7 +648,7 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
     last_residual = math.inf
     for iteration in range(1, max_iterations + 1):
         positions = None
-        reaction = tensions = None
+        reaction = tensions = beam_forces = None
         # The first state starts from the supplied geometry; subsequent states
         # warm-start from the preceding equilibrium while retaining input rope lengths.
         if initial_load_positions is None and iteration == 1:
@@ -552,19 +656,19 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
             stage_positions = load_positions
             for ratio in stage_ratios:
                 cfg["solver"]["truss_compression_regularization_ratio"] = ratio
-                positions, reaction, tensions = _solver_once(cfg, model, time_s, stage_positions)
+                positions, reaction, tensions, beam_forces = _solver_once(cfg, model, time_s, stage_positions)
                 stage_positions = positions
         else:
-            positions, reaction, tensions = _solver_once(cfg, model, time_s, load_positions)
+            positions, reaction, tensions, beam_forces = _solver_once(cfg, model, time_s, load_positions)
         if max_iterations == 1:
-            return positions, reaction, tensions, 1, 0.0, math.inf
+            return positions, reaction, tensions, beam_forces, 1, 0.0, math.inf
         if previous_solution is not None:
             last_residual = max(
                 (_point_distance(positions[node_id], previous_solution[node_id])
                  for node_id in positions), default=0.0
             )
             if last_residual <= tolerance:
-                return positions, reaction, tensions, iteration, last_residual, math.inf
+                return positions, reaction, tensions, beam_forces, iteration, last_residual, math.inf
         previous_solution = positions
         load_positions = {
             node_id: [load_positions[node_id][k] * (1.0 - relaxation)
@@ -585,7 +689,7 @@ def _solve_with_continuation_substeps(cfg, model, target_time_s, previous_positi
 
     try:
         return solve_equilibrium(cfg, model, target_time_s, previous_positions, previous_time_s)
-    except RuntimeError as direct_error:
+    except (RuntimeError, ArithmeticError) as direct_error:
         interval = target_time_s - previous_time_s if previous_time_s is not None else 0.0
         # A bisection below 2*minimum_step would create child steps smaller
         # than the configured floor. Stop here and report the true limiting
@@ -610,15 +714,15 @@ def _solve_with_continuation_substeps(cfg, model, target_time_s, previous_positi
         rigid_model = _is_rigid_model(cfg, model)
         logging.info(
             "Continuation substep converged at t=%.6f s: iterations=%s, %s=%.6g %s, AquaSim Chknorm=%.6g",
-            midpoint, middle[3], "force residual" if rigid_model else "position residual",
-            middle[4], "N" if rigid_model else "m", middle[5],
+            midpoint, middle[4], "force residual" if rigid_model else "position residual",
+            middle[5], "N" if rigid_model else "m", middle[6],
         )
         return _solve_with_continuation_substeps(
             cfg, model, target_time_s, middle[0], midpoint, minimum_step_s
         )
 
 
-def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
+def _row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forces,
                     hydro_iterations, hydro_residual, aquasim_chknorm):
     waterline = float(cfg["environment"]["waterline_z_m"])
     beam_zs = [positions[node_id][2] for node_id in model["beam_node_ids"]]
@@ -682,6 +786,14 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions,
         for j, node_id in enumerate(chain[1:-1], start=1):
             for axis, value in zip(("x", "y", "z"), positions[node_id]):
                 row[f"truss_line_{line['id']}_p{j}_{axis}_m"] = float(value)
+    for line_id, forces in beam_forces.items():
+        for end, offset in (("i", 0), ("j", 6)):
+            row[f"beam_line_{line_id}_end_{end}_axial_n"] = forces[offset]
+            row[f"beam_line_{line_id}_end_{end}_shear_y_n"] = forces[offset + 1]
+            row[f"beam_line_{line_id}_end_{end}_shear_z_n"] = forces[offset + 2]
+            row[f"beam_line_{line_id}_end_{end}_torsion_n_m"] = forces[offset + 3]
+            row[f"beam_line_{line_id}_end_{end}_moment_y_n_m"] = forces[offset + 4]
+            row[f"beam_line_{line_id}_end_{end}_moment_z_n_m"] = forces[offset + 5]
     return row
 
 
@@ -705,12 +817,12 @@ def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=Non
     result = None
     for time_s in times:
         logging.info("Solving equilibrium at t=%.3f s", time_s)
-        positions, reaction, tensions, iterations, residual, aquasim_chknorm = _solve_with_continuation_substeps(
+        positions, reaction, tensions, beam_forces, iterations, residual, aquasim_chknorm = _solve_with_continuation_substeps(
             cfg, model, time_s, previous_positions, previous_time, minimum_step
         )
         previous_positions = positions
         previous_time = time_s
-        rows.append(_row_from_state(time_s, cfg, model, positions, reaction, tensions,
+        rows.append(_row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forces,
                                     iterations, residual, aquasim_chknorm))
         rigid_model = _is_rigid_model(cfg, model)
         logging.info("Equilibrium converged at t=%.3f s: iterations=%s, %s=%.6g %s, AquaSim Chknorm=%.6g",

@@ -7,10 +7,16 @@
     <node id="3" x="5" y="5" z="-10"/>
     <node id="4" x="-5" y="5" z="-10"/>
     <node id="5" x="0" y="0" z="-5" name="upper_joint" role="upper_joint"/>
-    <node id="6" x="0" y="0" z="20" name="fixed_roller" role="roller"/>
+    <node id="6" x="0" y="0" z="20" name="roller_rope_joint" role="roller"/>
+    <node id="8" x="0" y="0" z="22" name="roller_anchor" role="fixed"/>
     <node id="7" x="40" y="0" z="20" name="fixed_winch" role="winch"/>
   </Nodes>
   <Components>
+    <beam id="roller1" name="Roller assembly" property_set="beam" structural_model="elastic" allowed_rope_components="rope1">
+      <wizard type="circular" outerDiameter="300" eModulus="2.1000E+11" gModulus="8.0769E+10"/>
+      <materials young="2.1000E+11" shear="8.0769E+10" crossectionareal="0.0706858" iy="0.0003976" iz="0.0003976" it="0.0007952" weightInAir="0" effectiveLineMassInWater="0"/>
+      <elements><element id="11" StartNode_ID="8" EndNode_ID="6" name="roller_body" role="roller_body"/></elements>
+    </beam>
     <beam id="beam1" name="Lifting beam" property_set="beam" structural_model="rigid">
       <wizard type="circular" outerDiameter="500.0" eModulus="1.1000E+09" gModulus="3.8400E+08"/>
       <materials young="1.1000E+09" shear="3.8400E+08" crossectionareal="6.490894E-02" iy="1.693131E-03" iz="1.693131E-03" it="3.386262E-03" weightInAir="283.9800" effectiveLineMassInWater="82.7217"/>
@@ -24,7 +30,7 @@
         <element id="4" StartNode_ID="4" EndNode_ID="1" name="beam_edge_4"/>
       </elements>
     </beam>
-    <truss id="rope1" name="Main rope" property_set="truss">
+    <truss id="rope1" name="Roller assembly" property_set="truss">
       <mooring weightInAir="0.076150" netLineMassInWater="-0.00043125" areal="7.850000E-05" young="6.0000E+10" noCompressionForces="true"/>
       <description active="true" visible="true">
         <color red="0.6800" green="0.5600" blue="0.9200"/>
