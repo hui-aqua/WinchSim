@@ -215,31 +215,18 @@ function rebuildNodeMarkers(){
 function setSelectedNodeRole(role){
   if(!sourceXmlDoc||!selectedNodeRef)return;
   const sourceId=String(selectedNodeRef.node_id),currentRole=selectedNodeRef.source_role||'',protectedRoles=new Set(['upper_joint','lower_joint','buoy_top']);
-  if(currentRole===role){toast(`Node ${sourceId} is already assigned as ${role}.`);return}
+  if(currentRole===role){toast(`Node ${sourceId} already has the ${role} role.`);return}
+  if(['roller','winch'].includes(currentRole)){toast(`Node ${sourceId} already has the ${currentRole} role. Add another role on a different node.`);return}
   if(protectedRoles.has(currentRole)&&currentRole!==role){toast(`Cannot replace the required ${currentRole} role; the solver needs that node.`);return}
   const xmlNodes=[...sourceXmlDoc.querySelectorAll('node')],target=xmlNodes.find(node=>node.getAttribute('id')===sourceId);
   if(!target){toast('Could not find this node in the source model.');return}
-  const replaced=[];
-  for(const node of xmlNodes){if(node!==target&&node.getAttribute('role')===role){replaced.push(node.getAttribute('id'));node.removeAttribute('role')}}
-  const referenceRoles=role==='roller'?null:new Set(['main_rope']);
-  for(const element of sourceXmlDoc.querySelectorAll('element')){
-    if(referenceRoles&&!referenceRoles.has(element.getAttribute('role')))continue;
-    for(const oldId of replaced)for(const [upper,lower] of [['StartNode_ID','startNodeId'],['EndNode_ID','endNodeId']]){
-      const attr=element.hasAttribute(upper)?upper:element.hasAttribute(lower)?lower:null;
-      if(attr&&element.getAttribute(attr)===oldId)element.setAttribute(attr,sourceId);
-    }
-  }
-  for(const winch of sourceXmlDoc.querySelectorAll('winch[node]'))for(const oldId of replaced)if(winch.getAttribute('node')===oldId)winch.setAttribute('node',sourceId);
   target.setAttribute('role',role);selectedNodeRef.source_role=role;selectedNodeRef.role=role;
-  sourceXmlDoc.querySelectorAll('node').forEach(node=>{if(replaced.includes(node.getAttribute('id'))){const previous=nodeById.get('n-'+node.getAttribute('id'));if(previous){previous.source_role='';previous.role='structural'}}});
-  const changedIds=new Set(replaced.map(id=>'n-'+id));
-  for(const element of scene?.elements||[])if((!referenceRoles||referenceRoles.has(element.role))&&Array.isArray(element.nodes))element.nodes=element.nodes.map(id=>changedIds.has(String(id))?'n-'+sourceId:id);
   modelHasChanges=true;$('save-model').disabled=false;
-  let message=`Node ${sourceId} is now ${role}. Save the model to download the changes.`;
+  let message=`Added ${role} role to node ${sourceId}. Save the model to download the changes.`;
   if(role==='roller'&&!([...sourceXmlDoc.querySelectorAll('element[role="roller_body"]')].some(element=>['StartNode_ID','startNodeId','EndNode_ID','endNodeId'].some(attr=>element.getAttribute(attr)===sourceId))))message+=' A solver-ready roller also needs a roller_body beam and two connected truss legs.';
   if(role==='winch'&&!([...sourceXmlDoc.querySelectorAll('element[role="main_rope"]')].some(element=>['StartNode_ID','startNodeId','EndNode_ID','endNodeId'].some(attr=>element.getAttribute(attr)===sourceId))))message+=' Ensure a main_rope line connects to this node.';
   $('node-context-menu').hidden=true;toast(message);
-  if(replaced.length){buildScene();viewBounds.setFromObject(modelGroup)}else rebuildNodeMarkers();
+  rebuildNodeMarkers();
   updateSelectedNodeInfo();draw();
 }
 function saveModifiedModel(){
