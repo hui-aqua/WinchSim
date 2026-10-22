@@ -32,5 +32,6 @@ desktop.ini
 # Generated package/build output
 build/
 dist/
+node_modules/
 *.egg-info/
 .system_generated/
