@@ -16,6 +16,7 @@ export function xmlToViewerResult(xmlText, name) {
       nodes.push({
         id: nid,
         node_id: id,
+        source_role: n.getAttribute('role') || '',
         position: [x, y, z],
         role: n.getAttribute('role') || (/winch/i.test(n.getAttribute('name') || '') ? 'winch' : /roller/i.test(n.getAttribute('name') || '') ? 'roller' : /joint/i.test(n.getAttribute('name') || '') ? 'joint' : 'structural'),
         label: n.getAttribute('name') || id
