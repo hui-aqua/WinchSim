@@ -344,6 +344,20 @@ def xml_to_model(xml_content_or_path) -> dict:
             node_dict["name"] = node_el.attrib["name"]
         if "role" in node_el.attrib:
             node_dict["role"] = node_el.attrib["role"]
+        dof_el = node_el.find("dof6")
+        if dof_el is not None:
+            node_dict["dof6"] = {
+                name: value.lower() == "true"
+                for name, value in dof_el.attrib.items()
+            }
+        if node_el.find("roller") is not None:
+            roller_el = node_el.find("roller")
+            node_dict["roller_constraint"] = {
+                "element_a": _safe_int(roller_el.attrib.get("elementA")),
+                "element_b": _safe_int(roller_el.attrib.get("elementB")),
+                "last_element_a": _safe_int(roller_el.attrib.get("lastelementA")),
+                "last_element_b": _safe_int(roller_el.attrib.get("lastelementB")),
+            }
         nodes.append(node_dict)
 
 
@@ -361,7 +375,7 @@ def xml_to_model(xml_content_or_path) -> dict:
 
         comp_id = comp_el.attrib.get("id") or comp_el.attrib.get("name") or f"{tag}_{len(components)+1}"
         comp_name = comp_el.attrib.get("name", comp_id)
-        prop_set_name = comp_el.attrib.get("property_set", comp_id if comp_id in ("beam", "truss", "buoy") else tag)
+        prop_set_name = comp_el.attrib.get("property_set", comp_id)
 
         comp_data = {
             "name": comp_name,
@@ -407,6 +421,8 @@ def xml_to_model(xml_content_or_path) -> dict:
                 it = _safe_float(mat_el.attrib.get("it"), it)
                 air_mass = _safe_float(mat_el.attrib.get("weightInAir") or mat_el.attrib.get("lineMassInAir"), air_mass)
                 water_mass = _safe_float(mat_el.attrib.get("effectiveLineMassInWater"), water_mass)
+                if "effectiveLineMassInWater" not in mat_el.attrib and "weightInWater" in mat_el.attrib:
+                    water_mass = _safe_float(mat_el.attrib["weightInWater"]) / 9.81
                 if "netLineLoadInWater" in mat_el.attrib:
                     water_load = _safe_float(mat_el.attrib["netLineLoadInWater"])
 
@@ -436,12 +452,17 @@ def xml_to_model(xml_content_or_path) -> dict:
             area = 7.85e-5
             air_mass = 0.07615
             water_mass = -0.00043125
+            tension_only = True
 
             if mooring_el is not None:
                 young = _safe_float(mooring_el.attrib.get("young"), young)
                 area = _safe_float(mooring_el.attrib.get("areal"), area)
                 air_mass = _safe_float(mooring_el.attrib.get("weightInAir"), air_mass)
                 water_mass = _safe_float(mooring_el.attrib.get("netLineMassInWater"), water_mass)
+                if "netLineMassInWater" not in mooring_el.attrib and "weightInWater" in mooring_el.attrib:
+                    water_mass = _safe_float(mooring_el.attrib["weightInWater"]) / 9.81
+                if "noCompressionForces" in mooring_el.attrib:
+                    tension_only = mooring_el.attrib["noCompressionForces"].lower() == "true"
 
             elements[prop_set_name] = {
                 "element_type": "truss",
@@ -449,6 +470,7 @@ def xml_to_model(xml_content_or_path) -> dict:
                 "cross_section_area_m2": area,
                 "line_mass_in_air_kg_per_m": air_mass,
                 "net_line_mass_in_water_kg_per_m": water_mass,
+                "tension_only": tension_only,
                 "interpretation_note": "Negative underwater line mass represents net buoyancy.",
             }
 
@@ -508,7 +530,7 @@ def xml_to_model(xml_content_or_path) -> dict:
     else:
         winch = {
             "mode": "prescribed_speed",
-            "payout_or_retrieval_speed_m_per_s": 0.1,
+            "payout_or_retrieval_speed_m_per_s": 0.0,
             "direction": "upward",
         }
 
@@ -552,7 +574,8 @@ def xml_to_model(xml_content_or_path) -> dict:
         solver = {
             "analysis_method": "global_quasi_static_equilibrium",
             "time_step_s": 1.0,
-            "default_truss_subdivisions": 8,
+            "default_truss_subdivisions": 1,
+            "duration_s": 0.0,
             "analysis_substeps": 30,
             "output_bin": "results/results.bin",
             "output_csv": "results/results.csv"

@@ -245,10 +245,10 @@ def main(argv=None):
         run_mesh_model(cfg, input_file, args.output_json, args.output_csv, args.output_bin)
     except Exception:
         logging.exception("Solver run failed")
-        raise
+        return 1
     logging.info("Solver run completed successfully")
     logging.info("Timestamped run log: %s", log_path.resolve())
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

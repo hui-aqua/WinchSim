@@ -165,17 +165,6 @@ def prepare_model(cfg):
     if not truss_lines:
         raise ValueError("Global equilibrium needs at least one truss line")
 
-    seen_component_nodes = {}
-    for component_id, member_nodes in component_nodes.items():
-        for node_id in member_nodes:
-            previous = seen_component_nodes.get(node_id)
-            if previous is not None and previous != component_id:
-                raise ValueError(
-                    f"Beam node {node_id} belongs to both {previous!r} and {component_id!r}; "
-                    "shared beam-component nodes are not supported by this analysis."
-                )
-            seen_component_nodes[node_id] = component_id
-
     solver_cfg = cfg.get("solver", {})
     default_segments = int(solver_cfg.get("default_truss_subdivisions", 8))
     if default_segments < 1:
@@ -200,8 +189,40 @@ def prepare_model(cfg):
         chains[line["id"]] = chain
 
     roller_body_lines = [line for line in beam_lines if line.get("role") == "roller_body"]
-    fixed_roles = {"roller", "winch", "fixed", "fixed_position", "anchor"}
+    roller_contacts = {}
+    line_by_id = {line["id"]: line for line in lines}
+    for node_id, node in nodes.items():
+        contact = node.get("roller_constraint")
+        if contact is None:
+            continue
+        side_lines = [line_by_id.get(contact.get("element_a")),
+                      line_by_id.get(contact.get("element_b"))]
+        if any(line is None or line["element_type"] != "truss" for line in side_lines):
+            raise ValueError(
+                f"AquaSim roller at node {node_id} must reference two existing truss elements"
+            )
+        if any(node_id not in line["nodes"] for line in side_lines):
+            raise ValueError(
+                f"AquaSim roller at node {node_id} must be an endpoint of both referenced truss elements"
+            )
+        if side_lines[0]["component_id"] != side_lines[1]["component_id"]:
+            raise ValueError(
+                f"AquaSim roller at node {node_id} references truss elements from different components"
+            )
+        if node_id not in structural_beam_node_ids:
+            raise ValueError(f"AquaSim roller node {node_id} must be attached to a beam component")
+        roller_contacts[node_id] = tuple(line["id"] for line in side_lines)
+
+    fixed_roles = {"winch", "fixed", "fixed_position", "anchor"}
     fixed_nodes = {node_id for node_id, role in roles.items() if role in fixed_roles}
+    translations = ("TranslationX", "TranslationY", "TranslationZ")
+    for node_id, node in nodes.items():
+        dof6 = node.get("dof6", {})
+        if dof6 and all(dof6.get(axis) is False for axis in translations):
+            fixed_nodes.add(node_id)
+    # AquaSim roller nodes prescribe the fixed support locations referenced by
+    # their two adjacent cable elements.
+    fixed_nodes.update(roller_contacts)
     for line in roller_body_lines:
         ends = list(map(int, line["nodes"]))
         heads = [node_id for node_id in ends if roles.get(node_id) == "roller"]
@@ -244,7 +265,8 @@ def prepare_model(cfg):
                     f"at roller head {head}"
                 )
     for node_id, role in roles.items():
-        if role == "roller" and not any(node_id in line["nodes"] for line in roller_body_lines):
+        if (role == "roller" and node_id not in roller_contacts
+                and not any(node_id in line["nodes"] for line in roller_body_lines)):
             raise ValueError(f"roller node {node_id} must be an endpoint of a roller_body beam")
     for role in ("roller", "winch"):
         found = [node_id for node_id, value in roles.items() if value == role]
@@ -253,6 +275,7 @@ def prepare_model(cfg):
         "beam_lines": beam_lines, "component_nodes": component_nodes,
         "references": references, "chains": chains, "internal_nodes": internal_nodes,
         "beam_node_ids": sorted(structural_beam_node_ids),
+        "roller_contacts": roller_contacts,
         "fixed_nodes": fixed_nodes, "default_segments": default_segments,
     }
 
@@ -327,16 +350,33 @@ def _solver_once(cfg, model, time_s, load_positions):
 
     max_tag = max(node_xyz)
     master_tags, master_info = {}, {}
-    for offset, (component_id, member_nodes) in enumerate(model["component_nodes"].items(), start=1):
-        component = cfg["components"][component_id]
-        if component["structural_model"] != "rigid":
+    rigid_groups = []
+    for component_id, member_nodes in model["component_nodes"].items():
+        if cfg["components"][component_id]["structural_model"] != "rigid":
             continue
+        overlaps = [index for index, (_, group_nodes) in enumerate(rigid_groups)
+                    if member_nodes.intersection(group_nodes)]
+        if not overlaps:
+            rigid_groups.append(([component_id], set(member_nodes)))
+            continue
+        first = overlaps[0]
+        group_ids, group_nodes = rigid_groups[first]
+        group_ids.append(component_id)
+        group_nodes.update(member_nodes)
+        for index in reversed(overlaps[1:]):
+            other_ids, other_nodes = rigid_groups.pop(index)
+            group_ids.extend(other_ids)
+            group_nodes.update(other_nodes)
+
+    for offset, (component_ids, member_nodes) in enumerate(rigid_groups, start=1):
         master = max_tag + offset
         center = [sum(node_xyz[node_id][k] for node_id in member_nodes) / len(member_nodes)
                   for k in range(3)]
         ops.node(master, *center)
-        master_tags[component_id] = master
-        master_info[component_id] = (center, sorted(member_nodes))
+        member_nodes = sorted(member_nodes)
+        for component_id in component_ids:
+            master_tags[component_id] = master
+            master_info[component_id] = (center, member_nodes)
         for node_id in sorted(member_nodes):
             ops.rigidLink("beam", master, node_id)
 
@@ -406,7 +446,9 @@ def _solver_once(cfg, model, time_s, load_positions):
             ))
             if not 0.0 < compression_ratio <= 1e-3:
                 raise ValueError("truss_compression_regularization_ratio must be in (0, 1e-3]")
-            compression_modulus = young * compression_ratio
+            compression_modulus = young * (
+                compression_ratio if props.get("tension_only", True) else 1.0
+            )
             ops.uniaxialMaterial(
                 "ElasticMultiLinear", material_tag, 0.0,
                 "-strain", -1.0, 0.0, 1.0,
@@ -426,8 +468,25 @@ def _solver_once(cfg, model, time_s, load_positions):
 
     # Translationally fixed anchors, free rope/joint translations, and
     # rotation releases for nodes that are not attached to beam components.
-    for node_id in model["fixed_nodes"]:
-        ops.fix(node_id, 1, 1, 1, 1, 1, 1)
+    full_support_roles = {"winch", "fixed", "fixed_position", "anchor"}
+    constrained_nodes = set(model["fixed_nodes"]) | {
+        node_id for node_id, node in model["nodes"].items()
+        if any(value is False for value in node.get("dof6", {}).values())
+    }
+    for node_id in constrained_nodes:
+        node = model["nodes"][node_id]
+        dof6 = node.get("dof6", {})
+        if (node_id in model["roller_contacts"]
+                or model["roles"].get(node_id) in full_support_roles):
+            flags = [1, 1, 1, 1, 1, 1]
+        elif dof6:
+            flags = [int(not dof6.get(axis, True)) for axis in (
+                "TranslationX", "TranslationY", "TranslationZ",
+                "rotationX", "rotationY", "rotationZ",
+            )]
+        else:
+            flags = [1, 1, 1, 1, 1, 1]
+        ops.fix(node_id, *flags)
     beam_member_nodes = set(model["beam_node_ids"])
     rigid_master_nodes = set(master_tags.values())
     buoy_component_ids = {line["component_id"] for line in model["beam_lines"]
@@ -487,7 +546,7 @@ def _solver_once(cfg, model, time_s, load_positions):
 
     ops.constraints("Transformation")
     ops.numberer("RCM")
-    ops.system("BandGeneral")
+    ops.system("UmfPack" if len(node_xyz) >= 500 else "BandGeneral")
     tolerance = float(cfg.get("solver", {}).get("force_tolerance_n", 1e-4))
     max_iterations = int(cfg.get("solver", {}).get("max_newton_iterations", 100))
     substeps = int(cfg.get("solver", {}).get("analysis_substeps", 4))
@@ -591,7 +650,7 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
         if initial_load_positions is None and not _has_grounded_elastic_roller(cfg, model):
             predictor_start = perf_counter()
             try:
-                guess, _, _ = _solver_once(cfg, model, time_s, guess)
+                guess, _, _, _ = _solver_once(cfg, model, time_s, guess)
                 logging.info("OpenSees initial predictor completed in %.3f s",
                              perf_counter() - predictor_start)
             except MissingSolverDependencyError:

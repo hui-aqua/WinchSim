@@ -59,14 +59,45 @@ def solve(cfg, model, time_s, initial_positions=None):
     if initial_positions:
         start.update({i: list(p) for i, p in initial_positions.items() if i in start})
 
-    layout, x0, member_nodes = [], [], set()
+    # Rigid beam components that share a node are physically connected and
+    # must move as one rigid assembly. Build connected groups so every mesh
+    # node has one unambiguous position in the optimizer.
+    component_groups = []
     for component_id, ids_set in model["component_nodes"].items():
+        ids = set(ids_set)
+        overlaps = [index for index, (_, group_nodes) in enumerate(component_groups)
+                    if ids.intersection(group_nodes)]
+        if not overlaps:
+            component_groups.append(([component_id], ids))
+            continue
+        first = overlaps[0]
+        group_components, group_nodes = component_groups[first]
+        group_components.append(component_id)
+        group_nodes.update(ids)
+        for index in reversed(overlaps[1:]):
+            other_components, other_nodes = component_groups.pop(index)
+            group_components.extend(other_components)
+            group_nodes.update(other_nodes)
+
+    layout, x0, member_nodes = [], [], set()
+    for component_ids, ids_set in component_groups:
         ids = sorted(ids_set)
-        # Components whose member nodes are all prescribed supports have no
-        # equilibrium unknowns. Keep their input coordinates fixed instead of
-        # introducing a free rigid-body motion for a grounded support beam.
         if set(ids).issubset(fixed):
             continue
+        fixed_member_nodes = sorted(set(ids).intersection(fixed))
+        if fixed_member_nodes:
+            if len(fixed_member_nodes) >= 3:
+                support_points = np.asarray(
+                    [model["xyz"][node_id] for node_id in fixed_member_nodes], dtype=float
+                )
+                if np.linalg.matrix_rank(support_points - support_points.mean(axis=0)) >= 2:
+                    # Three or more non-collinear fixed points prescribe all
+                    # rigid-body motion. Keep this assembly at its input pose.
+                    continue
+            raise ValueError(
+                "Rigid beam assembly has partially fixed support nodes; this analysis "
+                "requires either no fixed member nodes or at least three non-collinear supports."
+            )
         member_nodes.update(ids)
         reference_center = np.mean([model["xyz"][i] for i in ids], axis=0)
         local = np.array([model["xyz"][i] for i in ids]) - reference_center
@@ -78,10 +109,11 @@ def solve(cfg, model, time_s, initial_positions=None):
         rotation = Rotation.from_matrix(u @ correction @ vt)
         offset = len(x0)
         x0.extend(target.mean(axis=0).tolist())
-        fixed_rotation = components[component_id].get("rotation_behavior") == "fixed"
+        fixed_rotation = any(components[component_id].get("rotation_behavior") == "fixed"
+                             for component_id in component_ids)
         if not fixed_rotation:
             x0.extend(rotation.as_rotvec().tolist())
-        layout.append(("body", component_id, ids, reference_center, local,
+        layout.append(("body", tuple(component_ids), ids, reference_center, local,
                        fixed_rotation, offset))
     for node_id in sorted(set(model["nodes"]) - member_nodes - fixed):
         offset = len(x0)
@@ -240,7 +272,9 @@ def solve(cfg, model, time_s, initial_positions=None):
                 length = float(np.linalg.norm(d))
                 if length < 1e-12:
                     continue
-                extension = max(0.0, length - rest)
+                extension = length - rest
+                if props.get("tension_only", True):
+                    extension = max(0.0, extension)
                 tension = ea * extension / rest
                 energy += 0.5 * ea * extension * extension / rest
                 force = tension * d / length
