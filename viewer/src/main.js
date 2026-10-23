@@ -42,11 +42,11 @@ function drawElement(e){
   if(e.hidden)return;
   const refs=elementNodeRefs(e),pts=refs.map(id=>positions.get(id));
   if(pts.length<2||pts.some(point=>!point))return;
-  const type=String(e.type||'').toLowerCase(),structural=e.category==='beams'||e.role==='beam',component=componentForElement(e),color=e.color||component?.color||colorFor(e.role),radius=Number(e.section_radius_m)||Number(component?.section_radius_m)||(structural?.12:.018),key=e.component_id||e.componentId||e.id||('element-'+segmentBatches.size),pairs=[];
+  const type=String(e.type||'').toLowerCase(),component=componentForElement(e),category=`${e.category||''} ${component?.category||''}`.toLowerCase(),role=String(e.role||'').toLowerCase(),structural=category.includes('beam')||role==='beam',truss=category.includes('truss')||role==='truss',color=e.color||component?.color||colorFor(e.role),sectionRadius=Number(e.section_radius_m)||Number(component?.section_radius_m)||(structural?.12:.018),key=e.component_id||e.componentId||e.id||('element-'+segmentBatches.size),pairs=[];
   for(let i=1;i<refs.length;i++)pairs.push([refs[i-1],refs[i]]);
   if(type==='polygon'&&refs.length>2)pairs.push([refs.at(-1),refs[0]]);
-  const lineRadius=structural?radius:Math.max(radius,.008),batchKey=[key,structural?'beam':'rope',color,lineRadius].join('|');
-  if(!segmentBatches.has(batchKey))segmentBatches.set(batchKey,{key,structural,color,radius:lineRadius,segments:[]});
+  const lineRadius=truss?Math.min(.006,Math.max(.002,sectionRadius*.25)):structural?sectionRadius:Math.max(sectionRadius,.008),batchKey=[key,structural?'beam':truss?'truss':'rope',color,lineRadius].join('|');
+  if(!segmentBatches.has(batchKey))segmentBatches.set(batchKey,{key,structural,truss,color,radius:lineRadius,segments:[]});
   const batch=segmentBatches.get(batchKey);
   for(let segmentIndex=0;segmentIndex<pairs.length;segmentIndex++){const[a,b]=pairs[segmentIndex],segment={element:e,a,b,index:batch.segments.length,batch};batch.segments.push(segment);for(const id of new Set([a,b])){if(!segmentRefsByNode.has(id))segmentRefsByNode.set(id,[]);segmentRefsByNode.get(id).push(segment)}}
 }
@@ -60,9 +60,9 @@ function setSegmentMatrix(segment){
 function finalizeSegmentBatches(){
   for(const batch of segmentBatches.values()){
     const geometry=new THREE.CylinderGeometry(1,1,1,batch.structural?12:6),material=makeMaterial(batch.color,batch.structural?.42:.65,batch.structural?.12:.02),mesh=new THREE.InstancedMesh(geometry,material,batch.segments.length);
-    mesh.userData.structural=batch.structural;mesh.userData.instanceElements=batch.segments.map(segment=>segment.element);mesh.frustumCulled=false;batch.mesh=mesh;elementPickMeshes.push(mesh);
+    mesh.userData.structural=batch.structural;mesh.userData.sectionMesh=batch.structural||batch.truss;mesh.userData.instanceElements=batch.segments.map(segment=>segment.element);mesh.frustumCulled=false;batch.mesh=mesh;elementPickMeshes.push(mesh);
     batch.segments.forEach(segment=>setSegmentMatrix(segment));mesh.instanceMatrix.needsUpdate=true;addRenderable(batch.key,mesh);
-    if(batch.structural){const values=new Float32Array(batch.segments.length*6),lineGeometry=new THREE.BufferGeometry();lineGeometry.setAttribute('position',new THREE.BufferAttribute(values,3));const centerline=new THREE.LineSegments(lineGeometry,new THREE.LineBasicMaterial({color:0xf8fafc}));centerline.userData.centerline=true;centerline.userData.structural=true;batch.centerline=centerline;batch.segments.forEach(segment=>{const a=positions.get(segment.a),b=positions.get(segment.b);if(a&&b){values.set(a,segment.index*6);values.set(b,segment.index*6+3)}});lineGeometry.attributes.position.needsUpdate=true;lineGeometry.computeBoundingSphere();addRenderable(batch.key,centerline)}
+    if(batch.structural||batch.truss){const values=new Float32Array(batch.segments.length*6),lineGeometry=new THREE.BufferGeometry();lineGeometry.setAttribute('position',new THREE.BufferAttribute(values,3));const centerline=new THREE.LineSegments(lineGeometry,new THREE.LineBasicMaterial({color:0xf8fafc}));centerline.userData.centerline=true;centerline.userData.structural=batch.structural;batch.centerline=centerline;batch.segments.forEach(segment=>{const a=positions.get(segment.a),b=positions.get(segment.b);if(a&&b){values.set(a,segment.index*6);values.set(b,segment.index*6+3)}});lineGeometry.attributes.position.needsUpdate=true;lineGeometry.computeBoundingSphere();addRenderable(batch.key,centerline)}
   }
   segmentBatches.clear();
 }
@@ -158,7 +158,7 @@ function buildHelpers(){
   }
 }
 function buildScene(){for(const child of [...modelGroup.children]){modelGroup.remove(child);child.traverse?.(o=>{o.geometry?.dispose?.();if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material?.dispose?.()})}renderables.clear();segmentBatches.clear();segmentRefsByNode.clear();nodeInstances.clear();elementPickMeshes.length=0;componentIndex=new Map((scene?.components||[]).map(component=>[String(component.id),component]));if(!scene)return;const membraneElements=[];for(const e of scene.elements||[]){if(isMembraneElement(e))membraneElements.push(e);else drawElement(e)}finalizeSegmentBatches();drawMembraneGroups(membraneElements);for(const p of scene.primitives||[]){if(p.type==='cylinder'&&p.center){const [x,y,z]=p.center,g=new THREE.CylinderGeometry(p.radius,p.radius,p.height,24),m=new THREE.Mesh(g,makeMaterial(p.color||colorFor(p.role),.38,.16));m.rotation.x=Math.PI/2;m.position.set(x,y,z+p.height/2);addRenderable(p.component_id||p.id,m)}}addNodeMarkers();buildHelpers();syncVisibility();viewBounds.setFromObject(modelGroup)}
-function syncVisibility(){for(const [key,objects] of renderables)for(const obj of objects){obj.visible=obj.userData.nodeMarker?showNodes:!hiddenComponents.has(key);if(obj.userData.centerline)obj.visible=obj.visible&&displayMode!=='sections';else if(obj.isMesh&&obj.userData.structural)obj.visible=obj.visible&&displayMode!=='centerlines'}}
+function syncVisibility(){for(const [key,objects] of renderables)for(const obj of objects){obj.visible=obj.userData.nodeMarker?showNodes:!hiddenComponents.has(key);if(obj.userData.centerline)obj.visible=obj.visible&&displayMode!=='sections';else if(obj.isMesh&&obj.userData.sectionMesh)obj.visible=obj.visible&&displayMode!=='centerlines'}}
 function draw(){const w=view.clientWidth||innerWidth,h=view.clientHeight||innerHeight;if(!w||!h)return;renderer.setSize(w,h,false);activeCamera.aspect=w/h;activeCamera.updateProjectionMatrix();world.background.set(document.body.classList.contains('light')?0xe8edf3:0x0b1018);renderer.render(world,activeCamera);drawNodeLabels();updateSelectedNodeInfo()}
 function updateSelectedNodeInfo(){
   if(selectedNodeRef){
