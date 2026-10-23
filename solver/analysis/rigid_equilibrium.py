@@ -5,6 +5,8 @@ their material length. Beam and buoy members move as component-level rigid
 bodies. The external potential integrates the configured air/water line mass.
 """
 import math
+import csv
+from pathlib import Path
 
 
 def force_reference_n(cfg, model):
@@ -41,6 +43,23 @@ def force_acceptance_n(cfg, model):
     # the relative value may make the target stricter for a small system.
     relative_acceptance = relative * force_reference_n(cfg, model)
     return relative_acceptance if absolute == 0.0 else min(absolute, relative_acceptance)
+
+
+def _append_history(settings, row):
+    target = settings.get("equilibrium_history_csv")
+    if not target:
+        return
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    is_empty = not path.exists() or path.stat().st_size == 0
+    fields = ("time_s", "load_factor", "load_stage", "iteration", "method",
+              "potential_energy_j", "force_residual_n", "rms_update_m",
+              "step_scale", "optimizer_status")
+    with path.open("a", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        if is_empty:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def solve(cfg, model, time_s, initial_positions=None):
@@ -146,6 +165,9 @@ def solve(cfg, model, time_s, initial_positions=None):
     if chknorm_tolerance <= 0.0 or not math.isfinite(chknorm_tolerance):
         raise ValueError("solver.aquasim_convergence_criteria must be positive and finite")
     acceptance = force_acceptance_n(cfg, model)
+    load_steps = int(settings.get("equilibrium_load_steps", 1))
+    if load_steps < 1:
+        raise ValueError("solver.equilibrium_load_steps must be at least 1")
 
     displacement, _ = prescribed_motion(cfg["winch"], time_s, cfg["solver"]["duration_s"])
     upper = {i for i, role in model["roles"].items() if role == "upper_joint"}
@@ -185,6 +207,8 @@ def solve(cfg, model, time_s, initial_positions=None):
         mass = water + delta * air_fraction
         primitive = water * h + delta * radius * primitive_shape
         return mass, gravity * primitive
+
+    active_load_factor = {"value": 1.0}
 
     def evaluate(x):
         p = {i: np.asarray(v, dtype=float) for i, v in model["xyz"].items()}
@@ -251,8 +275,9 @@ def solve(cfg, model, time_s, initial_positions=None):
                         w = (s1 - s0) * weight
                         z = (1.0 - s) * a[2] + s * b[2]
                         mass, potential = mass_potential(z, air, water, width)
-                        energy += length0 * w * potential
-                        f = length0 * w * gravity * mass
+                        load_factor = active_load_factor["value"]
+                        energy += load_factor * length0 * w * potential
+                        f = load_factor * length0 * w * gravity * mass
                         grad[a_id][2] += f * (1.0 - s)
                         grad[b_id][2] += f * s
 
@@ -274,12 +299,28 @@ def solve(cfg, model, time_s, initial_positions=None):
                     continue
                 extension = length - rest
                 if props.get("tension_only", True):
-                    extension = max(0.0, extension)
-                tension = ea * extension / rest
-                energy += 0.5 * ea * extension * extension / rest
+                    if extension < 0.0:
+                        ratio = float(settings.get("truss_compression_regularization_ratio", 1e-3))
+                        axial = ea * ratio / rest
+                    else:
+                        axial = ea / rest
+                else:
+                    axial = ea / rest
+                tension = axial * extension
+                energy += 0.5 * axial * extension * extension
                 force = tension * d / length
                 grad[a_id] -= force
                 grad[b_id] += force
+
+        # Point loads use the same potential convention as gravity: a force
+        # contributes -F·x to energy and -F to its position gradient.
+        for node_id, node in model["nodes"].items():
+            force = node.get("point_load_n")
+            if force is not None:
+                applied = np.asarray(force, dtype=float)
+                load_factor = active_load_factor["value"]
+                energy -= load_factor * float(np.dot(applied, p[node_id]))
+                grad[node_id] -= load_factor * applied
 
         g = np.zeros_like(x)
         for item in layout:
@@ -332,24 +373,231 @@ def solve(cfg, model, time_s, initial_positions=None):
         previous_iteration["x"] = np.array(current_x, copy=True)
         previous_iteration["force"] = np.array(current_force, copy=True)
 
-    _, initial_force = evaluate(x0)
-    previous_iteration["x"] = np.array(x0, copy=True)
+    def tangent_stiffness_step(x, stage, iteration):
+        """Take one Newton step using the assembled truss tangent stiffness."""
+        from scipy.sparse import coo_matrix, eye
+        from scipy.sparse.linalg import spsolve
+
+        energy, gradient = evaluate(x)
+        residual = float(np.linalg.norm(gradient, ord=np.inf))
+        if residual <= acceptance:
+            _append_history(settings, {
+                "time_s": time_s, "load_factor": active_load_factor["value"],
+                "load_stage": stage, "iteration": iteration, "method": "tangent_stiffness",
+                "potential_energy_j": energy, "force_residual_n": residual,
+                "rms_update_m": 0.0, "step_scale": 0.0, "optimizer_status": "converged",
+            })
+            return x, residual, True
+
+        positions = {i: np.asarray(v, dtype=float)
+                     for i, v in {**model["xyz"], **model["internal_nodes"]}.items()}
+        node_jacobians = {}
+        for item in layout:
+            if item[0] == "point":
+                _, node_id, offset = item
+                positions[node_id] = np.asarray(x[offset:offset + 3], dtype=float)
+                node_jacobians[node_id] = (np.arange(offset, offset + 3), np.eye(3))
+            else:
+                _, _, node_ids, _, local, fixed_rotation, offset = item
+                rv = np.zeros(3) if fixed_rotation else x[offset + 3:offset + 6]
+                rotation = Rotation.from_rotvec(rv)
+                angle = float(np.linalg.norm(rv))
+                skew_rv = np.array([[0.0, -rv[2], rv[1]],
+                                    [rv[2], 0.0, -rv[0]],
+                                    [-rv[1], rv[0], 0.0]])
+                if angle < 1e-8:
+                    left_jacobian = np.eye(3) + 0.5 * skew_rv
+                else:
+                    left_jacobian = (
+                        np.eye(3) + (1.0 - math.cos(angle)) / angle**2 * skew_rv
+                        + (angle - math.sin(angle)) / angle**3 * (skew_rv @ skew_rv)
+                    )
+                for node_id, q in zip(node_ids, local):
+                    arm = rotation.apply(q)
+                    positions[node_id] = x[offset:offset + 3] + arm
+                    indices = list(range(offset, offset + 3))
+                    jacobian = np.eye(3)
+                    if not fixed_rotation:
+                        skew_arm = np.array([[0.0, -arm[2], arm[1]],
+                                             [arm[2], 0.0, -arm[0]],
+                                             [-arm[1], arm[0], 0.0]])
+                        jacobian = np.column_stack((jacobian, -skew_arm @ left_jacobian))
+                        indices.extend(range(offset + 3, offset + 6))
+                    node_jacobians[node_id] = (np.asarray(indices), jacobian)
+
+        rows, cols, values = [], [], []
+        for line in model["truss_lines"]:
+            props = cfg["elements"][components[line["component_id"]]["property_set"]]
+            ea = float(props["youngs_modulus_pa"]) * float(props["cross_section_area_m2"])
+            total = model["references"][line["id"]]
+            if line["id"] == moving_line:
+                total -= displacement
+            chain = model["chains"][line["id"]]
+            rest = total / (len(chain) - 1)
+            for a_id, b_id in zip(chain, chain[1:]):
+                d = positions[b_id] - positions[a_id]
+                length = float(np.linalg.norm(d))
+                if length <= 1e-12:
+                    continue
+                direction = d / length
+                extension = length - rest
+                if props.get("tension_only", True) and extension < 0.0:
+                    ratio = float(settings.get("truss_compression_regularization_ratio", 1e-3))
+                    axial = ea * ratio / rest
+                    force = axial * extension
+                else:
+                    axial = ea / rest
+                    force = axial * extension
+                tangent = (axial * np.outer(direction, direction)
+                           + max(force, 0.0) / length
+                           * (np.eye(3) - np.outer(direction, direction)))
+                a_map, b_map = node_jacobians.get(a_id), node_jacobians.get(b_id)
+                if a_map is not None:
+                    ai, aj = a_map
+                    block = aj.T @ tangent @ aj
+                    for i, row in enumerate(ai):
+                        for j, col in enumerate(ai):
+                            rows.append(int(row)); cols.append(int(col)); values.append(block[i, j])
+                if b_map is not None:
+                    bi, bj = b_map
+                    block = bj.T @ tangent @ bj
+                    for i, row in enumerate(bi):
+                        for j, col in enumerate(bi):
+                            rows.append(int(row)); cols.append(int(col)); values.append(block[i, j])
+                if a_map is not None and b_map is not None:
+                    ai, aj = a_map
+                    bi, bj = b_map
+                    block = -aj.T @ tangent @ bj
+                    for i, row in enumerate(ai):
+                        for j, col in enumerate(bi):
+                            rows.append(int(row)); cols.append(int(col)); values.append(block[i, j])
+                    block = -bj.T @ tangent @ aj
+                    for i, row in enumerate(bi):
+                        for j, col in enumerate(ai):
+                            rows.append(int(row)); cols.append(int(col)); values.append(block[i, j])
+
+        stiffness = coo_matrix((values, (rows, cols)), shape=(len(x), len(x))).tocsc()
+        diagonal = np.asarray(stiffness.diagonal())
+        typical = float(np.mean(np.abs(diagonal[diagonal != 0.0]))) if np.any(diagonal) else 1.0
+        stiffness = stiffness + eye(len(x), format="csc") * max(typical * 1e-10, 1e-10)
+        try:
+            direction = np.asarray(spsolve(stiffness, -gradient), dtype=float)
+        except Exception:
+            direction = np.full_like(x, np.nan)
+        if not np.all(np.isfinite(direction)) or float(np.dot(gradient, direction)) >= 0.0:
+            direction = -gradient / max(typical, 1.0)
+
+        max_translation = float(settings.get("tangent_max_translation_step_m", 0.05))
+        max_rotation = float(settings.get("tangent_max_rotation_step_rad", 0.02))
+        if max_translation <= 0.0 or max_rotation <= 0.0:
+            raise ValueError("Tangent stiffness step limits must be positive")
+        trust_scale = 1.0
+        for item in layout:
+            offset = item[-1]
+            translation_step = float(np.linalg.norm(direction[offset:offset + 3]))
+            if translation_step > max_translation:
+                trust_scale = min(trust_scale, max_translation / translation_step)
+            if item[0] == "body" and not item[5]:
+                rotation_step = float(np.linalg.norm(direction[offset + 3:offset + 6]))
+                if rotation_step > max_rotation:
+                    trust_scale = min(trust_scale, max_rotation / rotation_step)
+        direction *= trust_scale
+
+        slope = float(np.dot(gradient, direction))
+        scale, accepted = 1.0, False
+        for _ in range(24):
+            trial = x + scale * direction
+            trial_energy, _ = evaluate(trial)
+            if math.isfinite(trial_energy) and trial_energy <= energy + 1e-4 * scale * slope:
+                accepted = True
+                break
+            scale *= 0.5
+        if accepted:
+            update = scale * direction
+            x = x + update
+            _, next_gradient = evaluate(x)
+            residual = float(np.linalg.norm(next_gradient, ord=np.inf))
+            rms_update = float(np.linalg.norm(update) / math.sqrt(max(1, len(update))))
+            status = "accepted"
+        else:
+            rms_update, scale, status = 0.0, 0.0, "line_search_failed"
+        _append_history(settings, {
+            "time_s": time_s, "load_factor": active_load_factor["value"],
+            "load_stage": stage, "iteration": iteration, "method": "tangent_stiffness",
+            "potential_energy_j": energy, "force_residual_n": residual,
+            "rms_update_m": rms_update, "step_scale": scale, "optimizer_status": status,
+        })
+        return x, residual, accepted
+
+    max_iterations = int(settings.get("equilibrium_max_iterations", 2000))
+    if max_iterations < 1:
+        raise ValueError("solver.equilibrium_max_iterations must be positive")
+    x = np.array(x0, copy=True)
+    previous_iteration["x"] = np.array(x, copy=True)
+    _, initial_force = evaluate(x)
     previous_iteration["force"] = np.array(initial_force, copy=True)
-    result = minimize(evaluate, x0, jac=True, bounds=bounds,
-                      method=str(settings.get("equilibrium_optimizer", "L-BFGS-B")),
-                      callback=aquasim_callback,
-                      options={"maxiter": int(settings.get("equilibrium_max_iterations", 2000)),
-                               # A loose relative energy-change test can stop
-                               # L-BFGS-B while the physical force residual is
-                               # still above equilibrium_force_acceptance_n.
-                               "ftol": float(settings.get("equilibrium_ftol", 1e-15)),
-                               "gtol": float(settings.get("force_tolerance_n", 0.1)),
-                               "maxls": 100, "maxcor": 30})
+    result = None
+    tangent_frame = bool(layout)
+    iteration_number = 0
+    for step in range(1, load_steps + 1):
+        active_load_factor["value"] = step / load_steps
+        stage_iterations = max(1, math.ceil(max_iterations / load_steps))
+        tangent_converged = False
+        tangent_iterations = 0
+        if tangent_frame:
+            for local_iteration in range(1, stage_iterations + 1):
+                iteration_number += 1
+                tangent_iterations += 1
+                x, tangent_residual, accepted_step = tangent_stiffness_step(
+                    x, step, iteration_number
+                )
+                if tangent_residual <= acceptance:
+                    tangent_converged = True
+                    break
+                if not accepted_step:
+                    break
+        if not tangent_converged:
+            # Retain the energy optimizer as a recovery path for mechanisms or
+            # active-set changes that make the assembled tangent singular.
+            remaining = max(1, stage_iterations - tangent_iterations)
+            prior_x = {"value": np.array(x, copy=True)}
+
+            def history_callback(xk):
+                current = np.asarray(xk, dtype=float)
+                energy, gradient = evaluate(current)
+                delta = current - prior_x["value"]
+                _append_history(settings, {
+                    "time_s": time_s, "load_factor": active_load_factor["value"],
+                    "load_stage": step, "iteration": iteration_number + 1,
+                    "method": "L-BFGS-B recovery", "potential_energy_j": energy,
+                    "force_residual_n": float(np.linalg.norm(gradient, ord=np.inf)),
+                    "rms_update_m": float(np.linalg.norm(delta) / math.sqrt(max(1, len(delta)))),
+                    "step_scale": 1.0, "optimizer_status": "iteration",
+                })
+                prior_x["value"] = np.array(current, copy=True)
+                aquasim_callback(current)
+
+            result = minimize(
+                evaluate, x, jac=True, bounds=bounds,
+                method=str(settings.get("equilibrium_optimizer", "L-BFGS-B")),
+                callback=history_callback,
+                options={"maxiter": remaining,
+                         "ftol": float(settings.get("equilibrium_ftol", 1e-15)),
+                         "gtol": float(settings.get("force_tolerance_n", 0.1)),
+                         "maxls": 100, "maxcor": 30},
+            )
+            x = np.asarray(result.x, dtype=float)
+            iteration_number += int(getattr(result, "nit", 0))
+        previous_iteration["x"] = np.array(x, copy=True)
+        _, force = evaluate(x)
+        previous_iteration["force"] = np.array(force, copy=True)
+        if tangent_converged and step == load_steps:
+            result = type("TangentResult", (), {"message": "tangent stiffness converged"})()
+    solution_x = x
     # At active unilateral bounds, the normal gradient is the contact
     # reaction. It is balanced by the surface constraint and must be removed
     # from the free-force residual. L-BFGS-B's projected gradient uses this
     # same KKT convention.
-    solution_x = result.x
     final_energy, final_gradient = evaluate(solution_x)
     force_residual = final_gradient.copy()
     for index, (lower, upper_bound) in enumerate(bounds):

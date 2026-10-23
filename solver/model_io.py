@@ -350,6 +350,19 @@ def xml_to_model(xml_content_or_path) -> dict:
                 name: value.lower() == "true"
                 for name, value in dof_el.attrib.items()
             }
+        point_loads = []
+        for load_el in node_el.findall("pointLoad"):
+            if load_el.attrib.get("active", "true").lower() != "true":
+                continue
+            force_el = load_el.find("Force")
+            if force_el is not None:
+                point_loads.append([
+                    _safe_float(force_el.attrib.get(axis)) for axis in ("x", "y", "z")
+                ])
+        if point_loads:
+            node_dict["point_load_n"] = [
+                sum(force[axis] for force in point_loads) for axis in range(3)
+            ]
         if node_el.find("roller") is not None:
             roller_el = node_el.find("roller")
             node_dict["roller_constraint"] = {
@@ -573,14 +586,19 @@ def xml_to_model(xml_content_or_path) -> dict:
     else:
         solver = {
             "analysis_method": "global_quasi_static_equilibrium",
-            "time_step_s": 1.0,
             "default_truss_subdivisions": 1,
-            "duration_s": 0.0,
             "analysis_substeps": 30,
             "output_bin": "results/results.bin",
             "output_csv": "results/results.csv"
         }
-    solver.setdefault("duration_s", legacy_duration_s if legacy_duration_s is not None else 150.0)
+    # With no winch schedule or legacy duration, an AquaSim file describes a
+    # single static configuration.  A duration is only needed for a motion
+    # history; the equilibrium solver's output time increment is independent.
+    if legacy_duration_s is not None:
+        solver.setdefault("duration_s", legacy_duration_s)
+    elif solver.get("duration_s") is None:
+        solver["duration_s"] = 0.0
+    solver.setdefault("time_step_s", 1.0)
 
     return {
         "project": project,

@@ -218,7 +218,7 @@ def prepare_model(cfg):
     translations = ("TranslationX", "TranslationY", "TranslationZ")
     for node_id, node in nodes.items():
         dof6 = node.get("dof6", {})
-        if dof6 and all(dof6.get(axis) is False for axis in translations):
+        if dof6 and any(dof6.get(axis) is False for axis in translations):
             fixed_nodes.add(node_id)
     # AquaSim roller nodes prescribe the fixed support locations referenced by
     # their two adjacent cable elements.
@@ -544,6 +544,12 @@ def _solver_once(cfg, model, time_s, load_positions):
         ops.load(b_id, 0.0, 0.0, nodal_force, 0.0, 0.0, 0.0)
         truss_props_by_line[line["id"]] = props
 
+    # AquaSim point loads are nodal forces, distinct from member self-weight.
+    for node_id, node in model["nodes"].items():
+        force = node.get("point_load_n")
+        if force is not None:
+            ops.load(node_id, *map(float, force), 0.0, 0.0, 0.0)
+
     ops.constraints("Transformation")
     ops.numberer("RCM")
     ops.system("UmfPack" if len(node_xyz) >= 500 else "BandGeneral")
@@ -647,7 +653,8 @@ def solve_equilibrium(cfg, model, time_s, initial_load_positions=None, initial_t
         # OpenSees supplies a useful initial geometry, but rebuilding its full
         # nonlinear model at every output time is redundant. Later states use
         # the previous converged equilibrium as their continuation start.
-        if initial_load_positions is None and not _has_grounded_elastic_roller(cfg, model):
+        if (initial_load_positions is None and not _is_rigid_model(cfg, model)
+                and not _has_grounded_elastic_roller(cfg, model)):
             predictor_start = perf_counter()
             try:
                 guess, _, _, _ = _solver_once(cfg, model, time_s, guess)
@@ -858,6 +865,19 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forc
 
 def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=None):
     model = prepare_model(cfg)
+    history_target = cfg.setdefault("solver", {}).get("equilibrium_history_csv")
+    if history_target is None:
+        history_target = f"results/{Path(input_file).stem}_equilibrium_history.csv"
+    history_path = Path(history_target)
+    if not history_path.is_absolute():
+        history_path = ROOT / history_path
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        "time_s,load_factor,load_stage,iteration,method,potential_energy_j,"
+        "force_residual_n,rms_update_m,step_scale,optimizer_status\n",
+        encoding="utf-8",
+    )
+    cfg["solver"]["equilibrium_history_csv"] = history_path
     dt = float(cfg["solver"]["time_step_s"])
     duration = float(cfg["solver"]["duration_s"])
     if dt <= 0 or duration < 0:
