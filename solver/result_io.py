@@ -9,6 +9,7 @@ import csv
 from datetime import datetime
 import json
 import logging
+from numbers import Real
 import os
 from pathlib import Path
 import struct
@@ -69,7 +70,13 @@ def _replace_with_retry(temp_path: Path, filepath: Path) -> Path:
 
 def write_binary_results(filepath: Path, result: dict, rows: list[dict]):
     """Write a packed Float32 binary simulation result file."""
-    fields = result.get("fields") or list(rows[0].keys())
+    requested_fields = result.get("fields") or list(rows[0].keys())
+    # The packed viewer format stores float32 columns only. Keep descriptive
+    # text fields in CSV/JSON metadata, but exclude them from the numeric array.
+    fields = [
+        field for field in requested_fields
+        if all(row.get(field) is None or isinstance(row.get(field), Real) for row in rows)
+    ]
     num_rows = len(rows)
     num_cols = len(fields)
 

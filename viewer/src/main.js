@@ -230,6 +230,7 @@ function setSelectedNodeRole(role){
   if(role==='winch'&&!([...sourceXmlDoc.querySelectorAll('element[role="main_rope"]')].some(element=>['StartNode_ID','startNodeId','EndNode_ID','endNodeId'].some(attr=>element.getAttribute(attr)===sourceId))))message+=' Ensure a main_rope line connects to this node.';
   $('node-context-menu').hidden=true;toast(message);
   rebuildNodeMarkers();
+  renderStatistics(sourceModelName);
   updateSelectedNodeInfo();draw();
 }
 function saveModifiedModel(){

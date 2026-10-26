@@ -45,9 +45,8 @@ Useful global settings:
 | `continuation_min_step_s` | Smallest interval allowed while retrying a failed equilibrium. |
 | `output_bin` | Binary viewer result path. |
 | `output_csv` | CSV result path. |
-| `equilibrium_force_acceptance_n` | Absolute lower bound for the allowed force residual. |
-| `equilibrium_relative_force_tolerance` | Relative force residual limit based on total modeled member loading. |
-| `aquasim_convergence_criteria` | AquaSim-style iteration change norm. It is checked alongside force residual. |
+| `equilibrium_convergence_criterion` | Rigid-body acceptance rule: `force_residual` (default) or `aquasim_chknorm`. With `aquasim_chknorm`, WinchSim follows the AquaSim Eq. 142 threshold and reports force residual as a diagnostic. |
+| `aquasim_convergence_criteria` | Threshold for AquaSim Eq. 142 `ChkNorm`, used when `equilibrium_convergence_criterion="aquasim_chknorm"`. |
 
 Model coordinates use metres, time uses seconds, mass uses kilograms, and force uses newtons. `waterline_z_m` defines the still-water surface and `gravity_m_per_s2` defines gravity.
 
@@ -60,6 +59,8 @@ WinchSim reads node and line models in AquaSim-compatible `.xml` or `.amodel` fo
 - `<winch>`: prescribed motion schedule.
 - `<environment>`: waterline and gravity.
 - `<solver>`: duration, output interval, solver settings, and output paths.
+
+For an optional XPBD static-position solve, set `<solver analysis_method="xpbd_static_equilibrium">`. This selects a separate pseudo-dynamic relaxation path; the existing global equilibrium solver remains the default for current models. XPBD supports tension-only trusses and rigid beam assemblies, and reports its own position-change/speed convergence values.
 
 Roles identify solver-specific connection points or line behavior. Current examples use roles such as `upper_joint`, `lower_joint`, `roller`, `winch`, `buoy_top`, `main_rope`, `upper_sling`, `lower_sling`, and `buoy_body`. Keep IDs unique and ensure every line endpoint references a defined node.
 
@@ -79,11 +80,11 @@ The CSV can be opened in Excel or loaded into Python with `pandas.read_csv`. It 
 
 Look for the last `INFO Solving equilibrium at t=...` and the matching outcome:
 
-- `Equilibrium converged`: the requested output state passed the configured force acceptance check.
+- `Equilibrium converged`: the requested rigid-body output state passed the configured criterion. The log and result CSV identify the criterion and report both AquaSim `ChkNorm` and projected force residual.
 - `retrying continuation`: the solver is trying smaller internal time intervals to reach that output state.
 - `Checkpoint saved`: the displayed `.bin` and `.csv` contain all output states through that time.
 - `Solver run completed successfully`: all requested output states were written.
-- `Solver run failed`: inspect the exception immediately below it and the last force residual, AquaSim Chknorm, and acceptance values.
+- `Solver run failed`: inspect the exception immediately below it and the last force residual, AquaSim `Norm`/`ChkNorm`, and convergence limit.
 
 An OpenSees predictor warning can be followed by a successful rigid-energy fallback. A predictor warning alone does not mean the run failed; use the final completion line and `results_complete` metadata.
 

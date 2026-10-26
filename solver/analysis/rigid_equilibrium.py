@@ -6,6 +6,7 @@ bodies. The external potential integrates the configured air/water line mass.
 """
 import math
 import csv
+import logging
 from pathlib import Path
 
 
@@ -54,7 +55,8 @@ def _append_history(settings, row):
     is_empty = not path.exists() or path.stat().st_size == 0
     fields = ("time_s", "load_factor", "load_stage", "iteration", "method",
               "potential_energy_j", "force_residual_n", "rms_update_m",
-              "step_scale", "optimizer_status")
+              "step_scale", "optimizer_status", "delta_norm", "norm", "chk_norm",
+              "convergence_limit", "converged")
     with path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         if is_empty:
@@ -160,12 +162,58 @@ def solve(cfg, model, time_s, initial_positions=None):
 
     last_evaluation = {"x": None, "force": None}
     previous_iteration = {"x": None, "force": None}
-    chknorm_state = {"value": math.inf, "successive": 0}
+    chknorm_state = {
+        "value": math.inf, "norm": math.nan, "delta_norm": math.nan,
+        "previous_norm": 0.0, "converged": False,
+    }
     chknorm_tolerance = float(settings.get("aquasim_convergence_criteria", 1.0))
     if chknorm_tolerance <= 0.0 or not math.isfinite(chknorm_tolerance):
         raise ValueError("solver.aquasim_convergence_criteria must be positive and finite")
-    acceptance = force_acceptance_n(cfg, model)
-    load_steps = int(settings.get("equilibrium_load_steps", 1))
+    convergence_criterion = str(
+        settings.get("equilibrium_convergence_criterion", "force_residual")
+    ).strip().lower()
+    if convergence_criterion not in {"force_residual", "aquasim_chknorm"}:
+        raise ValueError(
+            "solver.equilibrium_convergence_criterion must be "
+            "'force_residual' or 'aquasim_chknorm'"
+        )
+    force_tolerance = force_acceptance_n(cfg, model)
+
+    def equilibrium_accepted(residual):
+        if convergence_criterion == "aquasim_chknorm":
+            return chknorm_state["value"] < chknorm_tolerance
+        return math.isfinite(residual) and residual <= force_tolerance
+
+    tangent_check_state = {"invalid": False}
+    def update_aquasim_norm(current_x, current_force):
+        """Record AquaSim Eq. 142 from consecutive force and displacement states."""
+        if previous_iteration["x"] is None:
+            delta_force = np.zeros_like(current_force)
+            delta_displacement = np.zeros_like(current_x)
+        else:
+            delta_force = np.abs((current_force - previous_iteration["force"]) * force_scale)
+            delta_displacement = np.abs(
+                (current_x - previous_iteration["x"]) * displacement_scale
+            )
+        norm = float(np.sum(delta_force ** 1.5 * delta_displacement ** 0.5))
+        delta_norm = norm - float(chknorm_state["previous_norm"])
+        chk_norm = norm / max(1, len(current_x))
+        chknorm_state.update(
+            value=chk_norm, norm=norm, delta_norm=delta_norm,
+            previous_norm=norm, converged=chk_norm < chknorm_tolerance,
+        )
+        previous_iteration["x"] = np.array(current_x, copy=True)
+        previous_iteration["force"] = np.array(current_force, copy=True)
+        return {
+            "delta_norm": delta_norm, "norm": norm, "chk_norm": chk_norm,
+            "convergence_limit": chknorm_tolerance,
+            "converged": chknorm_state["converged"],
+        }
+    # Continue the external load from zero to its requested value. Starting a
+    # large, slack cable assembly at full gravity can leave the tangent nearly
+    # singular before the cable active set has settled. Keep the overall
+    # iteration budget fixed; each load stage receives an equal share.
+    load_steps = int(settings.get("equilibrium_load_steps", 10))
     if load_steps < 1:
         raise ValueError("solver.equilibrium_load_steps must be at least 1")
 
@@ -334,11 +382,15 @@ def solve(cfg, model, time_s, initial_positions=None):
                     angle = np.linalg.norm(rv)
                     if angle < 1e-8:
                         skew = np.array([[0,-rv[2],rv[1]],[rv[2],0,-rv[0]],[-rv[1],rv[0],0]])
+                        # Rotation.from_rotvec uses a spatial (left) angular
+                        # perturbation: d(Rq) = (J_left dphi) x (Rq).
+                        # The energy gradient is therefore J_left.T @ torque.
                         jac = np.eye(3) + 0.5 * skew
                     else:
                         a, b, c = rv
                         skew = np.array([[0,-c,b],[c,0,-a],[-b,a,0]])
-                        jac = np.eye(3) + (1-math.cos(angle))/angle**2*skew + (angle-math.sin(angle))/angle**3*(skew@skew)
+                        jac = (np.eye(3) + (1-math.cos(angle))/angle**2*skew
+                               + (angle-math.sin(angle))/angle**3*(skew@skew))
                     g[offset + 3:offset + 6] = jac.T @ torque
             else:
                 _, i, offset = item
@@ -351,43 +403,25 @@ def solve(cfg, model, time_s, initial_positions=None):
         last_evaluation["force"] = np.array(g, copy=True)
         return energy, g
 
-    def aquasim_callback(xk):
-        # L-BFGS-B evaluates the accepted iterate before calling the callback.
-        # Reuse that gradient to calculate the AquaSim increment norm.
-        current_x = np.asarray(xk, dtype=float)
-        if last_evaluation["x"] is None or not np.array_equal(last_evaluation["x"], current_x):
-            evaluate(current_x)
-        current_force = last_evaluation["force"]
-        if previous_iteration["x"] is not None:
-            delta_force = np.abs((current_force - previous_iteration["force"]) * force_scale)
-            delta_displacement = np.abs((current_x - previous_iteration["x"]) * displacement_scale)
-            chknorm_state["value"] = float(np.mean(delta_force ** 1.5 * delta_displacement ** 0.5))
-            if chknorm_state["value"] <= chknorm_tolerance:
-                chknorm_state["successive"] += 1
-            else:
-                chknorm_state["successive"] = 0
-            current_residual = float(np.linalg.norm(current_force * force_scale, ord=np.inf))
-            if (chknorm_state["successive"] >= 2
-                    and current_residual <= acceptance):
-                raise StopIteration
-        previous_iteration["x"] = np.array(current_x, copy=True)
-        previous_iteration["force"] = np.array(current_force, copy=True)
-
     def tangent_stiffness_step(x, stage, iteration):
-        """Take one Newton step using the assembled truss tangent stiffness."""
+        """Take a Newton step and accept it only when equilibrium improves."""
         from scipy.sparse import coo_matrix, eye
         from scipy.sparse.linalg import spsolve
 
         energy, gradient = evaluate(x)
-        residual = float(np.linalg.norm(gradient, ord=np.inf))
-        if residual <= acceptance:
+        scaled_residual = gradient * force_scale
+        residual = float(np.linalg.norm(scaled_residual, ord=np.inf))
+        if residual <= force_tolerance:
+            norm_metrics = update_aquasim_norm(x, gradient)
             _append_history(settings, {
                 "time_s": time_s, "load_factor": active_load_factor["value"],
                 "load_stage": stage, "iteration": iteration, "method": "tangent_stiffness",
                 "potential_energy_j": energy, "force_residual_n": residual,
                 "rms_update_m": 0.0, "step_scale": 0.0, "optimizer_status": "converged",
+                **norm_metrics,
             })
-            return x, residual, True
+            if equilibrium_accepted(residual):
+                return x, residual, True, "converged"
 
         positions = {i: np.asarray(v, dtype=float)
                      for i, v in {**model["xyz"], **model["internal_nodes"]}.items()}
@@ -503,31 +537,77 @@ def solve(cfg, model, time_s, initial_positions=None):
                     trust_scale = min(trust_scale, max_rotation / rotation_step)
         direction *= trust_scale
 
-        slope = float(np.dot(gradient, direction))
+        if (settings.get("tangent_finite_difference_check", True)
+                and iteration == 1 and float(np.linalg.norm(direction)) > 0.0):
+            # Directional finite difference of the full residual. This checks
+            # the assembled tangent without constructing a dense FD matrix for
+            # every DOF in a large cable model.
+            unit_direction = direction / float(np.linalg.norm(direction))
+            probe = 1e-5 * unit_direction
+            _, probe_gradient = evaluate(x + probe)
+            fd_tangent_action = (probe_gradient - gradient) / 1e-5
+            analytical_action = np.asarray(stiffness @ unit_direction).reshape(-1)
+            mismatch = float(np.linalg.norm(fd_tangent_action - analytical_action)
+                             / max(np.linalg.norm(fd_tangent_action),
+                                   np.linalg.norm(analytical_action), 1e-12))
+            mismatch_limit = float(settings.get("tangent_finite_difference_relative_tolerance", 0.1))
+            if mismatch_limit <= 0.0 or not math.isfinite(mismatch_limit):
+                raise ValueError(
+                    "solver.tangent_finite_difference_relative_tolerance must be positive and finite"
+                )
+            log_check = logging.warning if mismatch > mismatch_limit else logging.info
+            log_check("Tangent directional finite-difference check at t=%.6g s: "
+                      "relative mismatch %.6g", time_s, mismatch)
+            evaluate(x)  # Restore the current iterate in the evaluation cache.
+            if mismatch > mismatch_limit:
+                tangent_check_state["invalid"] = True
+                _append_history(settings, {
+                    "time_s": time_s, "load_factor": active_load_factor["value"],
+                    "load_stage": stage, "iteration": iteration, "method": "tangent_stiffness",
+                    "potential_energy_j": energy, "force_residual_n": residual,
+                    "rms_update_m": 0.0, "step_scale": 0.0,
+                    "optimizer_status": "invalid_tangent_fallback",
+                    "delta_norm": math.nan, "norm": math.nan,
+                    "chk_norm": chknorm_state["value"],
+                    "convergence_limit": chknorm_tolerance, "converged": False,
+                })
+                return x, residual, False, "invalid_tangent"
+
+        # Accept a tangent step only when it lowers the scaled force residual.
+        current_merit = 0.5 * float(np.dot(scaled_residual, scaled_residual))
         scale, accepted = 1.0, False
+        next_gradient = None
         for _ in range(24):
             trial = x + scale * direction
-            trial_energy, _ = evaluate(trial)
-            if math.isfinite(trial_energy) and trial_energy <= energy + 1e-4 * scale * slope:
+            trial_energy, trial_gradient = evaluate(trial)
+            trial_residual = trial_gradient * force_scale
+            trial_merit = 0.5 * float(np.dot(trial_residual, trial_residual))
+            if math.isfinite(trial_energy) and math.isfinite(trial_merit) and trial_merit < current_merit:
                 accepted = True
+                next_gradient = trial_gradient
                 break
             scale *= 0.5
         if accepted:
             update = scale * direction
             x = x + update
-            _, next_gradient = evaluate(x)
-            residual = float(np.linalg.norm(next_gradient, ord=np.inf))
+            residual = float(np.linalg.norm(next_gradient * force_scale, ord=np.inf))
             rms_update = float(np.linalg.norm(update) / math.sqrt(max(1, len(update))))
             status = "accepted"
+            norm_metrics = update_aquasim_norm(x, next_gradient)
         else:
             rms_update, scale, status = 0.0, 0.0, "line_search_failed"
+            norm_metrics = {
+                "delta_norm": math.nan, "norm": math.nan, "chk_norm": chknorm_state["value"],
+                "convergence_limit": chknorm_tolerance, "converged": False,
+            }
         _append_history(settings, {
             "time_s": time_s, "load_factor": active_load_factor["value"],
             "load_stage": stage, "iteration": iteration, "method": "tangent_stiffness",
             "potential_energy_j": energy, "force_residual_n": residual,
             "rms_update_m": rms_update, "step_scale": scale, "optimizer_status": status,
+            **norm_metrics,
         })
-        return x, residual, accepted
+        return x, residual, accepted, status
 
     max_iterations = int(settings.get("equilibrium_max_iterations", 2000))
     if max_iterations < 1:
@@ -541,21 +621,47 @@ def solve(cfg, model, time_s, initial_positions=None):
     iteration_number = 0
     for step in range(1, load_steps + 1):
         active_load_factor["value"] = step / load_steps
+        chknorm_state.update(
+            value=math.inf, norm=math.nan, delta_norm=math.nan,
+            previous_norm=0.0, converged=False,
+        )
+        # Establish the previous-iteration force at this stage's load factor;
+        # the load jump itself is not an iteration change.
+        _, stage_force = evaluate(x)
+        previous_iteration["x"] = np.array(x, copy=True)
+        previous_iteration["force"] = np.array(stage_force, copy=True)
         stage_iterations = max(1, math.ceil(max_iterations / load_steps))
         tangent_converged = False
         tangent_iterations = 0
+        tangent_iteration_limit = min(
+            stage_iterations,
+            max(1, int(settings.get("tangent_max_iterations_per_load_stage", 25))),
+        )
         if tangent_frame:
-            for local_iteration in range(1, stage_iterations + 1):
+            for local_iteration in range(1, tangent_iteration_limit + 1):
                 iteration_number += 1
                 tangent_iterations += 1
-                x, tangent_residual, accepted_step = tangent_stiffness_step(
+                x, tangent_residual, accepted_step, tangent_status = tangent_stiffness_step(
                     x, step, iteration_number
                 )
-                if tangent_residual <= acceptance:
+                if tangent_status == "invalid_tangent":
+                    logging.warning(
+                        "Disabling tangent iterations at t=%.3f s, load stage %s/%s; "
+                        "switching to energy minimization with the remaining iteration budget",
+                        time_s, step, load_steps,
+                    )
+                    tangent_frame = False
+                    break
+                if equilibrium_accepted(tangent_residual):
                     tangent_converged = True
                     break
                 if not accepted_step:
-                    break
+                    raise RuntimeError(
+                        f"Tangent Newton line search could not reduce the force residual "
+                        f"at t={time_s:.6g} s, load stage {step}/{load_steps}; "
+                        f"residual {tangent_residual:.6g} N. The tangent or model "
+                        "constraints need correction before equilibrium can be accepted."
+                    )
         if not tangent_converged:
             # Retain the energy optimizer as a recovery path for mechanisms or
             # active-set changes that make the assembled tangent singular.
@@ -566,16 +672,20 @@ def solve(cfg, model, time_s, initial_positions=None):
                 current = np.asarray(xk, dtype=float)
                 energy, gradient = evaluate(current)
                 delta = current - prior_x["value"]
+                norm_metrics = update_aquasim_norm(current, gradient)
                 _append_history(settings, {
                     "time_s": time_s, "load_factor": active_load_factor["value"],
                     "load_stage": step, "iteration": iteration_number + 1,
                     "method": "L-BFGS-B recovery", "potential_energy_j": energy,
-                    "force_residual_n": float(np.linalg.norm(gradient, ord=np.inf)),
+                    "force_residual_n": float(np.linalg.norm(gradient * force_scale, ord=np.inf)),
                     "rms_update_m": float(np.linalg.norm(delta) / math.sqrt(max(1, len(delta)))),
                     "step_scale": 1.0, "optimizer_status": "iteration",
+                    **norm_metrics,
                 })
                 prior_x["value"] = np.array(current, copy=True)
-                aquasim_callback(current)
+                current_residual = float(np.linalg.norm(gradient * force_scale, ord=np.inf))
+                if equilibrium_accepted(current_residual):
+                    raise StopIteration
 
             result = minimize(
                 evaluate, x, jac=True, bounds=bounds,
@@ -588,6 +698,29 @@ def solve(cfg, model, time_s, initial_positions=None):
             )
             x = np.asarray(result.x, dtype=float)
             iteration_number += int(getattr(result, "nit", 0))
+            _, recovered_gradient = evaluate(x)
+            recovered_residual = float(
+                np.linalg.norm(recovered_gradient * force_scale, ord=np.inf)
+            )
+            tangent_converged = equilibrium_accepted(recovered_residual)
+        if not tangent_converged:
+            final_stage_residual = float(
+                np.linalg.norm(evaluate(x)[1] * force_scale, ord=np.inf)
+            )
+            if convergence_criterion == "aquasim_chknorm":
+                raise RuntimeError(
+                    f"Equilibrium step did not meet AquaSim ChkNorm acceptance at "
+                    f"t={time_s:.6g} s, load stage {step}/{load_steps}: ChkNorm "
+                    f"{chknorm_state['value']:.6g}, limit {chknorm_tolerance:.6g}; "
+                    f"force residual diagnostic {final_stage_residual:.6g} N."
+                )
+            raise RuntimeError(
+                f"Equilibrium step did not meet force acceptance at t={time_s:.6g} s, "
+                f"load stage {step}/{load_steps}: force residual "
+                f"{final_stage_residual:.6g} N, "
+                f"limit {force_tolerance:.6g} N; AquaSim ChkNorm "
+                f"{chknorm_state['value']:.6g} (diagnostic limit {chknorm_tolerance:.6g})."
+            )
         previous_iteration["x"] = np.array(x, copy=True)
         _, force = evaluate(x)
         previous_iteration["force"] = np.array(force, copy=True)
@@ -611,16 +744,24 @@ def solve(cfg, model, time_s, initial_positions=None):
             radius = max(1.0, max(float(np.linalg.norm(q)) for q in item[4]))
             force_residual[item[6] + 3:item[6] + 6] /= radius
     residual = float(np.linalg.norm(force_residual, ord=np.inf))
-    # L-BFGS-B can report success because the energy change became small even
-    # while a force component remains large.  The force residual is the
-    # equilibrium criterion; optimizer status alone is not sufficient.
-    chknorm_converged = chknorm_state["value"] <= chknorm_tolerance
-    if residual > acceptance:
-        raise RuntimeError(f"Global equilibrium failed at t={time_s:.3f} s: {result.message}; "
-                           f"generalized force residual {residual:.6g} N, "
-                           f"AquaSim Chknorm {chknorm_state['value']:.6g} "
-                           f"(criteria {chknorm_tolerance:.6g}), force acceptance "
-                           f"{acceptance:.6g} N (AquaSim norm met: {chknorm_converged})")
+    # ChkNorm remains a diagnostic, but a small per-DOF change can hide a large
+    # unbalanced system. Accept equilibrium only when the projected force
+    # residual also meets the configured force tolerance.
+    chknorm_converged = chknorm_state["value"] < chknorm_tolerance
+    if not equilibrium_accepted(residual):
+        result_message = getattr(result, "message", "iteration limit reached")
+        if convergence_criterion == "aquasim_chknorm":
+            raise RuntimeError(
+                f"Global equilibrium failed at t={time_s:.3f} s: {result_message}; "
+                f"AquaSim ChkNorm {chknorm_state['value']:.6g} does not meet "
+                f"criterion {chknorm_tolerance:.6g}; projected force residual "
+                f"diagnostic {residual:.6g} N."
+            )
+        raise RuntimeError(f"Global equilibrium failed at t={time_s:.3f} s: {result_message}; "
+                           f"projected force residual {residual:.6g} N exceeds "
+                           f"acceptance {force_tolerance:.6g} N (AquaSim ChkNorm "
+                           f"{chknorm_state['value']:.6g}, diagnostic criterion "
+                           f"{chknorm_tolerance:.6g})")
 
     positions = {i: np.asarray(v, dtype=float) for i, v in model["xyz"].items()}
     positions.update({i: np.asarray(v, dtype=float) for i, v in model["internal_nodes"].items()})
@@ -710,4 +851,4 @@ def solve(cfg, model, time_s, initial_positions=None):
             total_mass += length0 * (water + (air - water) * fraction_air)
     support = [0.0, 0.0, total_mass * gravity]
     # Summed support reaction follows vertical global force balance.
-    return positions, support, tensions, int(result.nit), residual, chknorm_state["value"]
+    return positions, support, tensions, iteration_number, residual, chknorm_state["value"]

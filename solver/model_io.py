@@ -591,6 +591,11 @@ def xml_to_model(xml_content_or_path) -> dict:
             "output_bin": "results/results.bin",
             "output_csv": "results/results.csv"
         }
+    # An AquaSim model often has a <solver> element containing only run
+    # settings (for example duration_s). Keep the same global-solver default
+    # in that case instead of falling through to solve.py's mesh-preview
+    # default, which requires WinchSim-specific upper_joint/main_rope roles.
+    solver.setdefault("analysis_method", project["model_type"])
     # With no winch schedule or legacy duration, an AquaSim file describes a
     # single static configuration.  A duration is only needed for a motion
     # history; the equilibrium solver's output time increment is independent.

@@ -264,8 +264,7 @@ Example for a new global quasi-static case:
         output_csv="results/my_case.csv"
         dynamic_effects_enabled="false"
         equilibrium_max_iterations="3000"
-        equilibrium_force_acceptance_n="25"
-        equilibrium_relative_force_tolerance="0.005"
+        equilibrium_load_steps="10"
         aquasim_convergence_criteria="1" />
 ```
 
@@ -273,7 +272,7 @@ Paths that are not absolute are resolved from the WinchSim project folder, not f
 
 | Setting | Use |
 | --- | --- |
-| `analysis_method` | For a new connected model, use `global_quasi_static_equilibrium`. Other available methods are `quasi_static_mesh_preview` and the legacy `quasi_static_lower_sling_profiles`. |
+| `analysis_method` | Select `global_quasi_static_equilibrium` (existing solver) or `xpbd_static_equilibrium` (XPBD pseudo-dynamic relaxation). `quasi_static_mesh_preview` and the legacy `quasi_static_lower_sling_profiles` are also available. |
 | `duration_s` | Total simulation duration, seconds. |
 | `time_step_s` | Requested output interval, seconds. Failed intervals may be retried internally at smaller intervals. |
 | `continuation_min_step_s` | Smallest allowed retry interval. Smaller values can improve continuation near abrupt geometry/load changes but may increase solve time. |
@@ -281,10 +280,31 @@ Paths that are not absolute are resolved from the WinchSim project folder, not f
 | `output_bin`, `output_csv` | Binary viewer result and CSV result paths. |
 | `dynamic_effects_enabled` | Keep `false`; dynamic analysis is not implemented. Setting it to `true` stops with an explicit error. |
 | `equilibrium_max_iterations` | Iteration limit for rigid energy minimization. Increasing it can cost more time and does not guarantee a physical solution. |
-| `equilibrium_force_acceptance_n` | Absolute floor for accepted force residual. |
-| `equilibrium_relative_force_tolerance` | Relative residual threshold based on the model’s total member-load scale. |
-| `aquasim_convergence_criteria` | AquaSim-style force/displacement change norm. It supplements the force-residual check and cannot accept a stalled solve by itself. |
+| `tangent_max_iterations_per_load_stage` | Maximum rigid-body tangent iterations per load stage before falling back to energy minimization. Defaults to `25`. |
+| `tangent_finite_difference_relative_tolerance` | Maximum relative mismatch accepted by the first tangent check. A larger mismatch disables tangent steps for the run and uses energy minimization. Defaults to `0.1`. |
+| `equilibrium_load_steps` | Number of external-load continuation stages in the rigid-body solver. Defaults to `10`. |
+| `equilibrium_convergence_criterion` | Rigid-body acceptance criterion: `force_residual` (default) or `aquasim_chknorm`. The latter follows the AquaSim Eq. 142 ChkNorm threshold and keeps force residual as a diagnostic. |
+| `aquasim_convergence_criteria` | AquaSim Eq. 142 threshold: `ChkNorm = sum(|ΔF|^1.5 |Δu|^0.5) / N`. Used for acceptance when `equilibrium_convergence_criterion="aquasim_chknorm"`. |
+| `equilibrium_force_acceptance_n`, `equilibrium_relative_force_tolerance` | Rigid-body projected force residual threshold. Used for acceptance when `equilibrium_convergence_criterion="force_residual"`; otherwise retained as a diagnostic. |
 | `force_tolerance_n` | Optimizer gradient tolerance in newtons. It is not a material strength limit. |
+| `xpbd_time_step_s` | XPBD pseudo-time step in seconds; defaults to `0.1`. |
+| `xpbd_max_iterations` | Maximum XPBD pseudo-time steps per requested output time; defaults to `4000`. |
+| `xpbd_projection_iterations` | Constraint projection sweeps per pseudo-time step; defaults to `8`. |
+| `xpbd_projection_relaxation` | Relaxation factor for the parallel constraint projection; defaults to `0.7`. |
+| `xpbd_damping` | Velocity damping in `[0, 1)`; defaults to `0.98`. |
+| `xpbd_position_tolerance_m` | Maximum position-change tolerance for identifying a static state; defaults to `1e-4 m`. |
+| `xpbd_stable_iterations` | Consecutive pseudo-time steps required below the static tolerance; defaults to `20`. |
+
+To select XPBD for one static state, use a solver element such as:
+
+```xml
+<solver analysis_method="xpbd_static_equilibrium"
+        duration_s="0" time_step_s="1"
+        xpbd_max_iterations="4000"
+        xpbd_position_tolerance_m="0.0001" />
+```
+
+XPBD supports tension-only/compliant truss lines and rigid beam assemblies. Elastic beam components are currently rejected with a clear error; the existing global solver remains available for those models.
 
 The XML parser also accepts advanced and legacy solver attributes. Unless they are described in the user guide or a supplied model, leave them unchanged; an accepted XML attribute is not necessarily used by the selected analysis method.
 

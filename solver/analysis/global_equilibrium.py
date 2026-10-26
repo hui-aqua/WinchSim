@@ -14,7 +14,6 @@ from pathlib import Path
 from time import perf_counter
 
 from hydrostatics import segment_air_fraction
-from analysis.rigid_equilibrium import force_acceptance_n
 from result_io import write_results
 from result_schema import build_scene, metric_definitions
 from winch_motion import prescribed_motion
@@ -809,7 +808,17 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forc
     rigid_model = _is_rigid_model(cfg, model)
     if rigid_model:
         residual_field = "equilibrium_force_residual_n"
-        converged = hydro_residual <= force_acceptance_n(cfg, model)
+        settings = cfg.get("solver", {})
+        criterion = str(settings.get(
+            "equilibrium_convergence_criterion", "force_residual"
+        )).strip().lower()
+        if criterion == "aquasim_chknorm":
+            converged = aquasim_chknorm < float(
+                settings.get("aquasim_convergence_criteria", 1.0)
+            )
+        else:
+            from analysis.rigid_equilibrium import force_acceptance_n
+            converged = hydro_residual <= force_acceptance_n(cfg, model)
     else:
         residual_field = "equilibrium_position_residual_m"
         converged = hydro_residual <= float(cfg.get("solver", {}).get("hydrostatic_position_tolerance_m", 0.005))
@@ -832,6 +841,9 @@ def _row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forc
     }
     if rigid_model:
         row["aquasim_chknorm"] = aquasim_chknorm
+        row["equilibrium_convergence_criterion"] = str(cfg.get("solver", {}).get(
+            "equilibrium_convergence_criterion", "force_residual"
+        ))
     for node_id, point in positions.items():
         if node_id in model["nodes"]:
             prefix = f"mesh_node_{node_id}"
@@ -874,7 +886,8 @@ def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=Non
     history_path.parent.mkdir(parents=True, exist_ok=True)
     history_path.write_text(
         "time_s,load_factor,load_stage,iteration,method,potential_energy_j,"
-        "force_residual_n,rms_update_m,step_scale,optimizer_status\n",
+        "force_residual_n,rms_update_m,step_scale,optimizer_status,delta_norm,norm,"
+        "chk_norm,convergence_limit,converged\n",
         encoding="utf-8",
     )
     cfg["solver"]["equilibrium_history_csv"] = history_path
@@ -904,19 +917,45 @@ def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=Non
         rows.append(_row_from_state(time_s, cfg, model, positions, reaction, tensions, beam_forces,
                                     iterations, residual, aquasim_chknorm))
         rigid_model = _is_rigid_model(cfg, model)
-        logging.info("Equilibrium converged at t=%.3f s: iterations=%s, %s=%.6g %s, AquaSim Chknorm=%.6g",
-                     time_s, iterations, "force residual" if rigid_model else "position residual",
-                     residual, "N" if rigid_model else "m", aquasim_chknorm)
-        if initial_equilibrium is None:
-            acceptance = (force_acceptance_n(cfg, model) if rigid_model else float(
-                cfg.get("solver", {}).get("hydrostatic_position_tolerance_m", 0.005)
+        if rigid_model:
+            criterion = str(cfg.get("solver", {}).get(
+                "equilibrium_convergence_criterion", "force_residual"
             ))
+            logging.info(
+                "Equilibrium converged at t=%.3f s: iterations=%s, criterion=%s, "
+                "force residual diagnostic=%.6g N, AquaSim ChkNorm=%.6g",
+                time_s, iterations, criterion, residual, aquasim_chknorm,
+            )
+        else:
+            logging.info("Equilibrium converged at t=%.3f s: iterations=%s, "
+                         "position residual=%.6g m",
+                         time_s, iterations, residual)
+        if initial_equilibrium is None:
+            if rigid_model:
+                settings = cfg.get("solver", {})
+                criterion = str(settings.get(
+                    "equilibrium_convergence_criterion", "force_residual"
+                )).strip().lower()
+                if criterion == "aquasim_chknorm":
+                    is_converged = aquasim_chknorm < float(
+                        settings.get("aquasim_convergence_criteria", 1.0)
+                    )
+                else:
+                    from analysis.rigid_equilibrium import force_acceptance_n
+                    is_converged = residual <= force_acceptance_n(cfg, model)
+            else:
+                is_converged = residual <= float(cfg.get("solver", {}).get(
+                    "hydrostatic_position_tolerance_m", 0.005
+                ))
             initial_equilibrium = {
-                "converged": residual <= acceptance,
+                "converged": is_converged,
                 "time_s": 0.0,
                 "equilibrium_iterations": iterations,
                 "force_residual_n" if rigid_model else "position_residual_m": residual,
                 **({"aquasim_chknorm": aquasim_chknorm} if rigid_model else {}),
+                **({"equilibrium_convergence_criterion": str(cfg.get("solver", {}).get(
+                    "equilibrium_convergence_criterion", "force_residual"
+                ))} if rigid_model else {}),
                 "rope_reference_lengths_m": {
                     str(line_id): length for line_id, length in model["references"].items()
                 },
@@ -931,6 +970,9 @@ def run_model(cfg, input_file, output_json=None, output_csv=None, output_bin=Non
                 "model_status": "global_quasi_static_equilibrium",
                 "analysis": {
                     "method": "global total-potential equilibrium at each prescribed winch position",
+                    "equilibrium_convergence_criterion": str(cfg.get("solver", {}).get(
+                        "equilibrium_convergence_criterion", "force_residual"
+                    )),
                     "beam_component_models": {
                         component_id: component.get("structural_model", "rigid")
                         for component_id, component in cfg["components"].items()

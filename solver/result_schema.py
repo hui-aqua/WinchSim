@@ -47,7 +47,8 @@ def _build_mesh_scene(cfg, rows):
             position[2] = float(first.get("buoy_top_z_m", position[2]))
             node_z_fields.setdefault("buoy_top_z_m", []).append(scene_ids[node_id])
         scene_nodes.append({"id": scene_ids[node_id], "position": position,
-                            "role": scene_role, "label": node.get("name", str(node_id))})
+                            "role": scene_role, "source_role": role,
+                            "label": node.get("name", str(node_id))})
 
     elements, primitives = [], []
     for line in cfg["lines"]:

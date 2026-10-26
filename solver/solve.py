@@ -2,8 +2,8 @@
 """WinchSim model runner for node/line XML or JSON inputs.
 
 Run ``python solver/solve.py [input-file.xml]``. The selected analysis method
-is read from the input file; the supplied models use the global equilibrium
-solver through this single command-line entry point.
+is read from the input file; global equilibrium and XPBD static relaxation are
+available through this single command-line entry point.
 """
 from pathlib import Path
 import argparse
@@ -193,14 +193,17 @@ def run_mesh_model(cfg, input_file, output_json=None, output_csv=None, output_bi
     if analysis_method == "global_quasi_static_equilibrium":
         from analysis.global_equilibrium import run_model
         return run_model(cfg, input_file, output_json, output_csv, output_bin)
+    if analysis_method == "xpbd_static_equilibrium":
+        from analysis.xpbd_static import run_model
+        return run_model(cfg, input_file, output_json, output_csv, output_bin)
     if analysis_method == "quasi_static_lower_sling_profiles":
         from analysis.roller_buoy import run_model
         return run_model(cfg, input_file, output_json, output_csv, output_bin)
     if analysis_method != "quasi_static_mesh_preview":
         raise ValueError(
             f"Unsupported solver.analysis_method {analysis_method!r}. "
-            "Available methods: global_quasi_static_equilibrium, quasi_static_mesh_preview, "
-            "quasi_static_lower_sling_profiles"
+            "Available methods: global_quasi_static_equilibrium, xpbd_static_equilibrium, "
+            "quasi_static_mesh_preview, quasi_static_lower_sling_profiles"
         )
     model = validate_mesh(cfg)
     dt = float(cfg["solver"]["time_step_s"])
