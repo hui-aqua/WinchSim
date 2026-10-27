@@ -49,3 +49,11 @@ body.light .tree-panel,body.light .panel,body.light .topbar,body.light .bottom-p
 .editor-tab{padding:7px 13px;font-size:10px}.panel{top:110px}.tree-panel{top:110px}#view,#node-label-overlay{top:110px}.sidebar-toggle{top:116px}.view-panel{top:122px}
 @media(max-width:1050px){.editor-tab{padding:7px 10px;font-size:9px}}
 @media(max-width:700px){.editor-tabs{top:50px;height:42px;gap:3px;padding:4px 6px}.editor-tab{padding:6px 9px;font-size:9px}.panel{top:100px}.sidebar-toggle{top:106px}#view,#node-label-overlay{top:92px}.view-panel{top:100px}.view-label{bottom:108px}}
+
+/* Higher contrast light palette */
+body.light{--bg:#f1f3f6;--panel:#e2e7ed;--line:#aeb8c5;--muted:#4b596b;--text:#172334;--cyan:#0369a1;--green:#3f6212;--purple:#6d28d9}
+body.light .section{border-bottom-color:#c0c8d2}body.light .tree-panel,body.light .panel,body.light .bottom-panel,body.light .topbar,body.light .editor-tabs{background:#e2e7ed}
+body.light .display-select,body.light .property-row input,body.light .node-info input,body.light .reference-section input[type=file],body.light .view-panel button,body.light .component-category{background:#f8fafc;color:#172334;border-color:#aeb8c5}
+body.light .editor-tab{color:#3e4c5e}body.light .editor-tab.active{background:#d1e7f4;border-color:#6b9fbd;color:#075985}body.light .editor-tab:hover{background:#d4dbe4;color:#172334}
+body.light .tree-item:hover,body.light .tree-item:focus{background:#d5dce5}body.light .pill,body.light .button{border-color:#aeb8c5;background:#f8fafc;color:#172334}body.light .button.primary{background:#d1e7f4;border-color:#6b9fbd;color:#0c4a6e}
+body.light .view-panel,body.light .view-label{background:#e2e7ed;color:#26364a;border-color:#aeb8c5}body.light #view{background:radial-gradient(ellipse at 57% 45%,#ffffff,#e9edf2 76%)}
