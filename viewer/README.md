@@ -4,7 +4,7 @@ The viewer is hosted at [hui-aqua.github.io/WinchSim](https://hui-aqua.github.io
 
 ## Editor tabs
 
-1. **Geometry** — create points by coordinates or relative offsets, lines between selected points, and triangle or quad surface connectivity.
+1. **Geometry** — create points by coordinates or relative offsets, lines between selected points, and triangle or quad surface connectivity. Import OBJ, STL, and STEP files as display-only reference objects; adjust source units, scale, opacity, and XYZ offset. References are excluded from the model XML and simulation.
 2. **Elements** — create beam, truss, and membrane property sets, then assign selected lines to beam or truss sets. Sea floor support is reserved.
 3. **Materials** — edit component EA, area, mass per metre, and beam section properties; edit breaking strength and unstretched length for a selected line. Density is derived from mass and area.
 4. **Boundary** — set point constraints, point loads, and model winch settings. Line break events are reserved.
@@ -24,3 +24,5 @@ This directory contains the source used to build the GitHub Pages site. The depl
 - `src/main.js` starts the editor and viewer.
 - `src/xml-model.js` converts model XML to the viewer's scene format.
 - `src/styles.css` contains the viewer styles.
+- `scripts/copy-occt-wasm.mjs` stages the replaceable STEP importer files for the Pages build.
+- `THIRD_PARTY_NOTICES.md` records the STEP importer license and source.
