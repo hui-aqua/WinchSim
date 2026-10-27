@@ -508,6 +508,8 @@ def xml_to_model(xml_content_or_path) -> dict:
                     line_dict["subdivisions"] = int(elem_el.attrib["subdivisions"])
                 if "rest_length_m" in elem_el.attrib:
                     line_dict["rest_length_m"] = float(elem_el.attrib["rest_length_m"])
+                if "breaking_strength_n" in elem_el.attrib:
+                    line_dict["breaking_strength_n"] = float(elem_el.attrib["breaking_strength_n"])
 
                 lines.append(line_dict)
 
