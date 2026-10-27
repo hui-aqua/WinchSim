@@ -57,3 +57,5 @@ body.light .display-select,body.light .property-row input,body.light .node-info 
 body.light .editor-tab{color:#3e4c5e}body.light .editor-tab.active{background:#d1e7f4;border-color:#6b9fbd;color:#075985}body.light .editor-tab:hover{background:#d4dbe4;color:#172334}
 body.light .tree-item:hover,body.light .tree-item:focus{background:#d5dce5}body.light .pill,body.light .button{border-color:#aeb8c5;background:#f8fafc;color:#172334}body.light .button.primary{background:#d1e7f4;border-color:#6b9fbd;color:#0c4a6e}
 body.light .view-panel,body.light .view-label{background:#e2e7ed;color:#26364a;border-color:#aeb8c5}body.light #view{background:radial-gradient(ellipse at 57% 45%,#ffffff,#e9edf2 76%)}
+
+.hidden-file-input{display:none!important}.brand #open-xml{white-space:nowrap}
