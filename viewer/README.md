@@ -12,6 +12,8 @@ The viewer is hosted at [hui-aqua.github.io/WinchSim](https://hui-aqua.github.io
 6. **Solver** — edit solver method, duration, time step, environment waterline/gravity, waves, and current settings.
 7. **Results** — open result files for playback and inspect statistics.
 
+The workspace keeps the model tree and component visibility on the left, the 3D viewport in the center, the active tab tools and selected-item inspector on the right, and validation/model/solver status along the bottom. Changing tabs retains the viewport, camera, and applicable selection.
+
 Tabs 1–6 edit one shared XML model. Changes are autosaved as a local browser draft; **Save XML** downloads the model for use with AquaSim. Use **New** to start another blank case or **Open model or results** in Results to import an existing file.
 
 ## Build and deploy
