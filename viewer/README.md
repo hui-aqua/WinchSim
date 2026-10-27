@@ -1,15 +1,18 @@
 # WinchSim AquaSim Model Editor
 
-The viewer is hosted at [hui-aqua.github.io/WinchSim](https://hui-aqua.github.io/WinchSim/). It opens into a new, blank AquaSim-style model. No file is needed to begin editing.
+The viewer is hosted at [hui-aqua.github.io/WinchSim](https://hui-aqua.github.io/WinchSim/). It opens into a blank model and saves an editable draft in browser storage. The model tree and geometry are shared across six preparation tabs.
 
-## Create and save a model
+## Editor tabs
 
-1. Add nodes by XYZ coordinates or create a point relative to a selected node.
-2. Choose a beam or truss property set and create a line by picking its two endpoint nodes in the viewport. Add more property sets with **Beam set** or **Truss set**.
-3. Select nodes or lines in the viewport or Model tree to inspect and edit their properties.
-4. Choose **Save XML** to download the current model. The XML keeps the environment, nodes, components, material properties, element connectivity, and supported WinchSim solver settings.
+1. **Geometry** — create points by coordinates or relative offsets, lines between selected points, and triangle or quad surface connectivity.
+2. **Elements** — create beam, truss, and membrane property sets, then assign selected lines to beam or truss sets. Sea floor support is reserved.
+3. **Materials** — edit component EA, area, mass per metre, and beam section properties; edit breaking strength and unstretched length for a selected line. Density is derived from mass and area.
+4. **Boundary** — set point constraints, point loads, and model winch settings. Line break events are reserved.
+5. **Loads** — edit truss drag and added-mass coefficients. Lift coefficient and membrane solidity/load coefficients are reserved until their AquaSim XML mappings are confirmed.
+6. **Solver** — edit solver method, duration, time step, environment waterline/gravity, waves, and current settings.
+7. **Results** — open result files for playback and inspect statistics.
 
-Use **Open model or results** to open an existing `.xml`, `.amodel`, JSON, or binary results file. Existing result playback and visualization tools remain available.
+Tabs 1–6 edit one shared XML model. Changes are autosaved as a local browser draft; **Save XML** downloads the model for use with AquaSim. Use **New** to start another blank case or **Open model or results** in Results to import an existing file.
 
 ## Build and deploy
 
